@@ -3,7 +3,21 @@ name: Train
 on:
   push:
     branches: [main]
+    paths:
+      - "train.py"
+      - "data.py"
+      - "plot.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/train.yml"
   pull_request:
+    paths:
+      - "train.py"
+      - "data.py"
+      - "plot.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/train.yml"
 
 jobs:
   smoke-test:
@@ -18,10 +32,10 @@ jobs:
       - run: uv sync
 
       - name: Train LM (10 steps)
-        run: uv run python train.py --task lm --steps 10
+        run: uv run python train.py --task lm --steps 100
 
       - name: Train TS (10 steps)
-        run: uv run python train.py --task ts --steps 10
+        run: uv run python train.py --task ts --steps 100
 
       - name: Generate plots
         env:
