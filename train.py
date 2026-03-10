@@ -36,7 +36,7 @@ from data import (
 # model (override via NS_* env vars for sweeps)
 D_MODEL = int(os.environ.get("NS_D_MODEL", 192))
 N_LAYERS = int(os.environ.get("NS_N_LAYERS", 4))
-STATE_DIM = int(os.environ.get("NS_STATE_DIM", 64))
+STATE_DIM = int(os.environ.get("NS_STATE_DIM", 16))
 MLP_RATIO = 2
 
 # training
