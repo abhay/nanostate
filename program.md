@@ -116,13 +116,15 @@ LOOP FOREVER:
 3. Run the experiment: `uv run python train.py --task lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Prepend env vars if sweeping, e.g. `NS_LR=3e-4 NS_D_MODEL=256 uv run python train.py --task lm > run.log 2>&1`.
 4. Parse the results: `grep -A1 METRICS run.log | head -1` gives a JSON blob with all metrics.
 5. If the output is empty or shows an error, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix.
-6. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git). For env var sweeps, note the env vars in the description column.
+6. Record the results in results.tsv. For env var sweeps, note the env vars in the description column.
 7. If the primary metric improved (lower val_bpb, higher accuracy, lower val_mse):
    - **Code change**: keep the commit, advance the branch.
    - **Env var sweep**: commit the winning values as new defaults in `train.py`, then advance.
+   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`), commit results.tsv + reports/, and push to the remote branch. This keeps the remote in sync and prevents losing work if the agent crashes.
 8. If the metric is equal or worse:
    - **Code change**: git reset back to where you started.
    - **Env var sweep**: nothing to undo, just move on.
+   - Do NOT push on discard/crash. Only push on keep.
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
@@ -166,6 +168,17 @@ The starting model is a naive diagonal S4D. It's deliberately missing many known
 - Larger/smaller models, different layer counts.
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.
+
+## End of run
+
+When the human stops the loop (or you're wrapping up), finalize the run artifacts:
+
+1. **Final analysis**: Run the `analyze-results` skill one last time. This writes `knowledge/analysis_<tag>.md` with distilled learnings — what worked, what didn't, what to try next. This is the memory that future agents read.
+2. **Run summary**: Run `uv run python progress.py --summary <tag>` to generate `reports/runs/<tag>.md`. This is the human-readable narrative: experiment count, kept improvements, metric trajectory, top changes. Short enough for a tweet, detailed enough for a changelog.
+3. **Dashboard**: Run `uv run python progress.py --html-only` to regenerate `reports/index.html` + `reports/results.json`.
+4. **Final commit and push**: Commit results.tsv, reports/, and knowledge/ to the experiment branch. Push.
+
+The branch is now ready to merge to main. The human decides when to merge.
 
 ## Safety
 

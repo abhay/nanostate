@@ -20,16 +20,13 @@ Also read the most recent `knowledge/analysis_*.md` if one exists. Build on prev
 
 ### Step 3: Gap analysis
 
-- What hasn't been tried yet? Cross-reference with the improvement paths in TODO.md and the SSM guidance in program.md.
+- What hasn't been tried yet? Cross-reference with the SSM guidance in program.md and summaries in knowledge/.
 - Are there combinations of individual improvements that haven't been tested together?
 - Are there hyperparameter ranges that haven't been explored?
 
-### Step 4: Recommend next experiments
+### Step 4: Distill learnings
 
-Produce a ranked list of 5-10 experiments to try next, with reasoning. Prioritize:
-1. Combinations of kept improvements that haven't been stacked
-2. Unexplored directions from TODO.md
-3. Variations on near-misses (experiments that were close to improving)
+Write a `knowledge/analysis_<tag>.md` (where tag is the current autoresearch branch tag). This is the **memory file** that future agents read. It should contain:
 
 - **What always works**: directions that consistently improve metrics. Future agents should build on these.
 - **What never works**: directions tried multiple times that never helped. Future agents should skip these.
