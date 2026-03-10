@@ -109,23 +109,24 @@ class S4DLayer(nn.Module):
 
 
 class SSMBlock(nn.Module):
-    """SSM -> LayerNorm -> MLP -> LayerNorm (post-norm residual)."""
+    """Mamba-style gated block: pre-norm -> expand -> SSM * SiLU(gate) -> project."""
 
-    def __init__(self, d_model: int, state_dim: int, mlp_ratio: int = 2):
+    def __init__(self, d_model: int, state_dim: int, expand: int = 2):
         super().__init__()
-        self.ssm = S4DLayer(d_model, state_dim)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, d_model * mlp_ratio),
-            nn.GELU(),
-            nn.Linear(d_model * mlp_ratio, d_model),
-        )
-        self.norm2 = nn.LayerNorm(d_model)
+        d_inner = d_model * expand
+        self.norm = nn.LayerNorm(d_model)
+        self.in_proj = nn.Linear(d_model, 2 * d_inner)
+        self.ssm = S4DLayer(d_inner, state_dim)
+        self.out_proj = nn.Linear(d_inner, d_model)
 
     def __call__(self, x):
-        x = self.norm1(x + self.ssm(x))
-        x = self.norm2(x + self.mlp(x))
-        return x
+        residual = x
+        x = self.norm(x)
+        xz = self.in_proj(x)
+        x_ssm, z = mx.split(xz, 2, axis=-1)
+        x_ssm = self.ssm(x_ssm)
+        x_ssm = x_ssm * nn.silu(z)
+        return residual + self.out_proj(x_ssm)
 
 
 # ---------------------------------------------------------------------------
