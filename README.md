@@ -28,13 +28,13 @@ Right now this runs on an M1 Max. Basically a potato by modern ML standards. Tha
 
 ## Baseline numbers
 
-1000 steps on M1, no tuning, random init. These are intentionally bad. That's the point.
+15K steps on an M1 Max, no tuning, random init. These are intentionally bad. That's the point.
 
 | Task | Dataset | Params | Step time | Metric |
 |------|---------|--------|-----------|--------|
-| Language modeling | TinyShakespeare (byte-level) | 431K | ~20ms | 2.33 BPB |
-| DNA classification | Nucleotide Transformer (promoter detection) | 366K | ~24ms | 83.6% accuracy |
-| Time series | ETT-h1 (electricity forecasting) | 367K | ~20ms | 1.05 MSE |
+| Language modeling | TinyShakespeare (byte-level) | 431K | ~21ms | 2.57 BPB |
+| DNA classification | Nucleotide Transformer (promoter detection) | 366K | ~24ms | 85.7% accuracy |
+| Time series | ETT-h1 (electricity forecasting) | 367K | ~20ms | 0.94 MSE |
 
 **Language modeling** (byte-level Shakespeare, 431K params)
 
