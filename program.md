@@ -124,6 +124,8 @@ LOOP FOREVER:
    - **Code change**: git reset back to where you started.
    - **Env var sweep**: nothing to undo, just move on.
 
+**Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
+
 **Timeout**: Each experiment should finish in under 2 minutes (1000 steps at ~20ms/step). If a run exceeds 5 minutes, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
