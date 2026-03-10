@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import os
 import time
 
@@ -32,21 +33,21 @@ from data import (
 # Config
 # ---------------------------------------------------------------------------
 
-# model
-D_MODEL = 128
-N_LAYERS = 4
-STATE_DIM = 64
+# model (override via NS_* env vars for sweeps)
+D_MODEL = int(os.environ.get("NS_D_MODEL", 128))
+N_LAYERS = int(os.environ.get("NS_N_LAYERS", 4))
+STATE_DIM = int(os.environ.get("NS_STATE_DIM", 64))
 MLP_RATIO = 2
 
 # training
-BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
-MAX_STEPS = 1000
+BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
+LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
+MAX_STEPS = int(os.environ.get("NS_STEPS", 1000))
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
 
 # task-specific
-SEQ_LEN = 256  # for lm and ts
+SEQ_LEN = int(os.environ.get("NS_SEQ_LEN", 256))  # for lm and ts
 PRED_LEN = 96  # forecast horizon for ts
 DNA_TASK = "promoter_no_tata"
 ETT_VARIANT = "ETTh1"
@@ -348,7 +349,25 @@ def main():
                 row = [step, f"{tl:.4f}", f"{vl:.4f}"] + extra + [f"{step_ms:.0f}", f"{total_s:.1f}"]
                 writer.writerow(row)
 
+    # --- metrics summary (machine-readable) ---
+    total_s = time.time() - t0
+    summary = {"task": task, "params": n_params, "steps": max_steps, "d_model": D_MODEL, "n_layers": N_LAYERS, "state_dim": STATE_DIM}
+    summary["train_loss"] = round(train_loss.item(), 4)
+    summary["val_loss"] = round(metrics["val_loss"], 4)
+    summary["step_ms"] = round(step_ms, 1)
+    summary["total_seconds"] = round(total_s, 1)
+    if task == "lm":
+        summary["val_bpb"] = round(metrics["val_bpb"], 4)
+    elif task == "dna":
+        summary["accuracy"] = round(metrics["accuracy"], 4)
+    elif task == "ts":
+        summary["val_mse"] = round(metrics["val_mse"], 4)
+        summary["val_mae"] = round(metrics["val_mae"], 4)
+
     print(f"\nDone. Log: {log_file}")
+    print("---METRICS---")
+    print(json.dumps(summary))
+    print("---END METRICS---")
 
 
 if __name__ == "__main__":
