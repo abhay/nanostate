@@ -1,0 +1,18 @@
+name: Train
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - name: Smoke test (LM, 10 steps)
+        run: uv run python train.py --task lm --steps 10
+      - name: Smoke test (TS, 10 steps)
+        run: uv run python train.py --task ts --steps 10
