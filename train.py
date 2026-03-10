@@ -126,7 +126,7 @@ class SSMBlock(nn.Module):
         x_ssm, z = mx.split(xz, 2, axis=-1)
         x_ssm = self.ssm(x_ssm)
         x_ssm = x_ssm * nn.silu(z)
-        return residual + self.out_proj(x_ssm)
+        return residual + self.out_proj(x_ssm) * (N_LAYERS ** -0.5)
 
 
 # ---------------------------------------------------------------------------
