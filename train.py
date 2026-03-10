@@ -285,7 +285,12 @@ def main():
     n_params = count_params(model)
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
 
-    optimizer = optim.Adam(learning_rate=lr)
+    # cosine decay with linear warmup
+    warmup_steps = max(1, max_steps // 10)
+    warmup = optim.linear_schedule(1e-7, lr, warmup_steps)
+    cosine = optim.cosine_decay(lr, max_steps - warmup_steps)
+    lr_schedule = optim.join_schedules([warmup, cosine], [warmup_steps])
+    optimizer = optim.Adam(learning_rate=lr_schedule)
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
 
@@ -321,6 +326,7 @@ def main():
             x, y = mx.array(xnp), mx.array(ynp)
 
         train_loss, grads = loss_and_grad(model, x, y)
+        grads, _ = optim.clip_grad_norm(grads, max_norm=1.0)
         optimizer.update(model, grads)
         mx.eval(model.parameters(), optimizer.state, train_loss)
 
