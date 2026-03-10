@@ -9,7 +9,6 @@ Usage:
 import csv
 import glob
 import os
-import sys
 
 import matplotlib.pyplot as plt
 
@@ -39,7 +38,7 @@ def detect_task(cols):
     return "unknown"
 
 
-def plot_runs(paths):
+def plot_runs(paths, out_path="logs/curves.png"):
     """Plot one or more training runs, overlaid."""
     runs = []
     for p in paths:
@@ -109,21 +108,25 @@ def plot_runs(paths):
         return
 
     plt.tight_layout()
-    out = os.path.join("logs", "curves.png")
-    plt.savefig(out, dpi=150)
-    print(f"Saved {out}")
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
     plt.show()
 
 
 def main():
-    if len(sys.argv) > 1:
-        # expand globs (shell may or may not do this)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("logs", nargs="*", help="CSV log files to plot")
+    parser.add_argument("-o", "--output", default=None, help="Output path for the plot PNG")
+    args = parser.parse_args()
+
+    if args.logs:
         paths = []
-        for arg in sys.argv[1:]:
+        for arg in args.logs:
             expanded = glob.glob(arg)
             paths.extend(expanded if expanded else [arg])
     else:
-        # find most recent log
         all_logs = sorted(glob.glob("logs/*.csv"), key=os.path.getmtime)
         if not all_logs:
             print("No logs found in logs/")
@@ -131,7 +134,8 @@ def main():
         paths = [all_logs[-1]]
         print(f"Plotting most recent: {paths[0]}")
 
-    plot_runs(paths)
+    out_path = args.output or os.path.join("logs", "curves.png")
+    plot_runs(paths, out_path)
 
 
 if __name__ == "__main__":

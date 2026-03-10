@@ -24,17 +24,29 @@ Then make it better.
 - SSM → LayerNorm → MLP → LayerNorm blocks
 - Basic Adam
 
-Right now this runs on an M1 Mac. That's the whole compute budget. Part of the appeal of SSMs: you can actually train something meaningful without a cluster. We'll be looking at other hardware soon.
+Right now this runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh. We'll be looking at other architectures soon.
 
 ## Baseline numbers
 
-100 steps on M1, no tuning, random init. These are intentionally bad. That's the point.
+1000 steps on M1, no tuning, random init. These are intentionally bad. That's the point.
 
 | Task | Dataset | Params | Step time | Metric |
 |------|---------|--------|-----------|--------|
-| Language modeling | TinyShakespeare (byte-level) | 431K | ~22ms | 2.98 BPB |
-| DNA classification | Nucleotide Transformer (promoter detection) | 366K | ~28ms | 83.8% accuracy |
-| Time series | ETT-h1 (electricity forecasting) | 367K | ~20ms | 1.00 MSE |
+| Language modeling | TinyShakespeare (byte-level) | 431K | ~20ms | 2.33 BPB |
+| DNA classification | Nucleotide Transformer (promoter detection) | 366K | ~24ms | 83.6% accuracy |
+| Time series | ETT-h1 (electricity forecasting) | 367K | ~20ms | 1.05 MSE |
+
+**Language modeling** (byte-level Shakespeare, 431K params)
+
+![LM baseline](assets/lm_baseline.png)
+
+**DNA classification** (promoter detection, 366K params)
+
+![DNA baseline](assets/dna_baseline.png)
+
+**Time series forecasting** (ETT-h1, 367K params)
+
+![TS baseline](assets/ts_baseline.png)
 
 ## Getting started
 
