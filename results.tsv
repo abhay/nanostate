@@ -18,3 +18,6 @@ f49377f	lm	2.2538	1065856	keep	Mamba-style gated block (SiLU, expand=2, pre-norm
 f7ee280	lm	2.2232	3426688	discard	conv1d k=4 before SSM (3x params, too expensive)
 a7eda3d	lm	2.1880	1065856	keep	NS_BATCH_SIZE=64
 a7eda3d	lm	2.2314	1065856	discard	NS_BATCH_SIZE=48
+4adcdb7	lm	2.2354	1065856	discard	NS_LR=2e-3 (bs=64)
+4adcdb7	lm	2.2505	1065856	discard	NS_LR=5e-4 (bs=64)
+edd8b30	lm	2.2075	1065856	keep	1/sqrt(n_layers) output scaling
