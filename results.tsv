@@ -1,0 +1,20 @@
+commit	task	val_metric	params	status	description
+90f1b52	lm	2.3145	431104	keep	baseline
+c81e04c	lm	2.4392	431104	discard	HiPPO S4D-Real A init: A_n = -(n+0.5)
+d4982ce	lm	2.3382	431104	discard	pre-norm residual blocks
+6179ffc	lm	2.4316	431104	discard	dt init log-uniform [0.001, 0.1]
+90f1b52	lm	2.5599	431104	discard	NS_LR=3e-4 (lower lr)
+90f1b52	lm	2.3766	431104	discard	NS_LR=3e-3 (higher lr)
+90f1b52	lm	2.2591	843136	keep	NS_D_MODEL=192
+90f1b52	lm	2.2440	1386240	keep	NS_D_MODEL=256
+90f1b52	lm	2.2780	613632	keep	NS_N_LAYERS=6
+90f1b52	lm	2.2908	1215232	discard	NS_D_MODEL=192 NS_N_LAYERS=6
+5fc1340	lm	2.2626	769408	keep	NS_STATE_DIM=32 (d=192 base)
+5fc1340	lm	2.2591	732544	keep	NS_STATE_DIM=16 (d=192 base)
+f49377f	lm	2.2538	1065856	keep	Mamba-style gated block (SiLU, expand=2, pre-norm)
+95bc0a2	lm	2.2769	1065856	discard	AdamW weight_decay=0.01
+303eb97	lm	2.2265	1065856	keep	cosine LR decay + warmup + grad clip 1.0
+303eb97	lm	2.2420	1065856	discard	NS_STEPS=2000 (near timeout)
+f7ee280	lm	2.2232	3426688	discard	conv1d k=4 before SSM (3x params, too expensive)
+a7eda3d	lm	2.1880	1065856	keep	NS_BATCH_SIZE=64
+a7eda3d	lm	2.2314	1065856	discard	NS_BATCH_SIZE=48
