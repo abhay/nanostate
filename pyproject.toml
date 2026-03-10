@@ -1,0 +1,24 @@
+[project]
+name = "nanostate"
+version = "0.1.0"
+description = "The nanochat of state space models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.10.0",
+    "numpy>=2.2.0",
+    "datasets>=3.0.0",
+    "huggingface-hub>=0.20.0",
+    "mlx>=0.22.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.0",
+]
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
