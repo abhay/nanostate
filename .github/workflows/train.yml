@@ -8,11 +8,101 @@ on:
 jobs:
   smoke-test:
     runs-on: macos-26
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
-      - name: Smoke test (LM, 10 steps)
+
+      - name: Train LM (10 steps)
         run: uv run python train.py --task lm --steps 10
-      - name: Smoke test (TS, 10 steps)
+
+      - name: Train TS (10 steps)
         run: uv run python train.py --task ts --steps 10
+
+      - name: Generate plots
+        env:
+          MPLBACKEND: Agg
+        run: |
+          uv run python -c "import matplotlib.pyplot"
+          for log in logs/*.csv; do
+            uv run python plot.py "$log"
+          done
+
+      - name: Publish plots to ci-artifacts branch
+        if: always()
+        env:
+          RUN_ID: ${{ github.run_id }}
+          IS_MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          # copy plots to temp
+          mkdir -p /tmp/ci-plots
+          for png in logs/*.png; do
+            cp "$png" "/tmp/ci-plots/${RUN_ID}_$(basename "$png")"
+          done
+
+          # switch to ci-artifacts branch (create orphan if needed)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse --verify origin/ci-artifacts >/dev/null 2>&1; then
+            git checkout ci-artifacts
+          else
+            git checkout --orphan ci-artifacts
+            git rm -rf .
+          fi
+
+          # copy new plots in
+          mkdir -p plots
+          cp /tmp/ci-plots/* plots/
+
+          # prune old entries (keep last 100 for main, last 5 for PRs)
+          if [ "$IS_MAIN" = "true" ]; then
+            KEEP=100
+          else
+            KEEP=5
+          fi
+          ls -t plots/*.png 2>/dev/null | tail -n +$((KEEP + 1)) | xargs rm -f 2>/dev/null || true
+
+          git add plots/
+          git commit -m "CI plots for run ${RUN_ID}" --allow-empty
+          git push origin ci-artifacts
+
+      - name: Write job summary
+        if: always()
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "## Training Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          for png in logs/*.png; do
+            name=$(basename "$png")
+            url="https://raw.githubusercontent.com/${REPO}/ci-artifacts/plots/${RUN_ID}_${name}"
+            echo "![${name}](${url})" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          done
+          for log in logs/*.csv; do
+            task=$(basename "$log" .csv | cut -d_ -f1)
+            echo "### ${task}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            column -t -s, "$log" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-logs
+          path: logs/*.csv
+
+      - name: Upload plots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-plots
+          path: logs/*.png
