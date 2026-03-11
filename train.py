@@ -257,6 +257,7 @@ def main():
     parser.add_argument("--steps", type=int, default=MAX_STEPS)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
+    parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
     args = parser.parse_args()
 
     batch_size = args.batch
@@ -363,6 +364,21 @@ def main():
     elif task == "ts":
         summary["val_mse"] = round(metrics["val_mse"], 4)
         summary["val_mae"] = round(metrics["val_mae"], 4)
+
+    # --- checkpoint ---
+    if args.save:
+        os.makedirs(args.save, exist_ok=True)
+        config = {
+            "task": task,
+            "d_model": D_MODEL,
+            "n_layers": N_LAYERS,
+            "state_dim": STATE_DIM,
+            "mlp_ratio": MLP_RATIO,
+        }
+        model.save_weights(os.path.join(args.save, "model.npz"))
+        with open(os.path.join(args.save, "config.json"), "w") as f:
+            json.dump(config, f, indent=2)
+        print(f"Saved checkpoint to {args.save}")
 
     print(f"\nDone. Log: {log_file}")
     print("---METRICS---")

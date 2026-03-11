@@ -59,6 +59,26 @@ uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
 
+## Generation
+
+Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
+
+```bash
+# Train and save a checkpoint
+uv run python train.py --task lm --save checkpoints/lm
+
+# Generate text
+uv run python generate.py checkpoints/lm --prompt "ROMEO: " --tokens 500
+
+# Greedy decoding
+uv run python generate.py checkpoints/lm --temp 0 --tokens 200
+
+# Adjust sampling
+uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
+```
+
+The inference state is a fixed-size vector (d_model x state_dim x n_layers x 4 bytes). For the default model that's 128KB. Generating the millionth token costs the same as the first.
+
 ## References
 
 If you're new to SSMs, these are worth your time (roughly in order of accessibility):

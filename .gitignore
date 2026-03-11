@@ -6,9 +6,10 @@ __pycache__/
 # Virtual environments
 .venv/
 
-# Data and logs
+# Data, logs, and checkpoints
 data/
 logs/
+checkpoints/
 
 # OS
 .DS_Store

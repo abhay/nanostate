@@ -120,7 +120,7 @@ LOOP FOREVER:
 7. If the primary metric improved (lower val_bpb, higher accuracy, lower val_mse):
    - **Code change**: keep the commit, advance the branch.
    - **Env var sweep**: commit the winning values as new defaults in `train.py`, then advance.
-   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`), commit results.tsv + reports/, and push to the remote branch. This keeps the remote in sync and prevents losing work if the agent crashes.
+   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`). If this is the LM task, also save a checkpoint (`--save checkpoints/lm_best`) and generate a text sample (`uv run python generate.py checkpoints/lm_best --prompt "ROMEO: " --tokens 200 --temp 0.8 2>&1 | head -20`). Append the sample to the results log or commit message so there's a qualitative record. Commit results.tsv + reports/, and push to the remote branch. This keeps the remote in sync and prevents losing work if the agent crashes.
 8. If the metric is equal or worse:
    - **Code change**: git reset back to where you started.
    - **Env var sweep**: nothing to undo, just move on.
@@ -132,7 +132,7 @@ LOOP FOREVER:
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
-**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. The human might be asleep. You are autonomous. If you run out of ideas, read the references in README.md, re-read train.py for new angles, try combining previous near-misses, try more radical changes. The loop runs until the human interrupts you, period.
+**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. The human might be asleep. You are autonomous. If you run out of ideas, read the references in README.md, re-read train.py for new angles, try combining previous near-misses, try more radical changes. The loop runs until the human interrupts you, period. **If the human does interrupt**, run the periodic checkpoint steps (analysis, summary, dashboard, commit, push) before stopping so nothing is lost.
 
 ## SSM-specific guidance
 
@@ -169,16 +169,16 @@ The starting model is a naive diagonal S4D. It's deliberately missing many known
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.
 
-## End of run
+## Periodic checkpoints
 
-When the human stops the loop (or you're wrapping up), finalize the run artifacts:
+Every 10 experiments (or when you feel stuck), pause the loop and do housekeeping:
 
-1. **Final analysis**: Run the `analyze-results` skill one last time. This writes `knowledge/analysis_<tag>.md` with distilled learnings — what worked, what didn't, what to try next. This is the memory that future agents read.
-2. **Run summary**: Run `uv run python progress.py --summary <tag>` to generate `reports/runs/<tag>.md`. This is the human-readable narrative: experiment count, kept improvements, metric trajectory, top changes. Short enough for a tweet, detailed enough for a changelog.
+1. **Analysis**: Run the `analyze-results` skill. This writes `knowledge/analysis_<tag>.md` with distilled learnings: what worked, what didn't, recommended next experiments. This is the memory that future agents (and future sessions of yourself) read.
+2. **Run summary**: Run `uv run python progress.py --summary <tag>` to generate `reports/runs/<tag>.md`.
 3. **Dashboard**: Run `uv run python progress.py --html-only` to regenerate `reports/index.html` + `reports/results.json`.
-4. **Final commit and push**: Commit results.tsv, reports/, and knowledge/ to the experiment branch. Push.
+4. **Commit and push**: Commit results.tsv, reports/, and knowledge/ to the experiment branch. Push.
 
-The branch is now ready to merge to main. The human decides when to merge.
+This ensures that if the session ends (context limit, crash, human interrupt), the work is preserved and the next session can pick up where you left off.
 
 ## Safety
 
