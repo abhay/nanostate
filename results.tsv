@@ -13,3 +13,6 @@ da90ca7	lm	2.2718	4199680	discard	d=384 n_layers=6 (more depth underfits at 1000
 a52f3c0	lm	2.3776	2865664	discard	d=384 2000 steps (overfits: train 1.04 val 1.65)
 9820e7e	lm	2.2665	2865664	discard	AdamW weight_decay=0.1 (hurts at 1000 steps)
 5eca1e3	lm	2.2524	4343296	keep	Mamba-style SiLU gated block (replaces SSM+MLP)
+5eca1e3	lm	2.3051	4343296	discard	seq_len=512 (overfits more, 2x slower)
+5eca1e3	lm	2.2225	4343296	keep	lr=5e-4 (env var sweep)
+5eca1e3	lm	2.2541	4343296	discard	lr=3e-4 (too slow to converge in 1000 steps)
