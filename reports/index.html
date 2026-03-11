@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanostate autoresearch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root {
+    --bg: #2c3039;
+    --bg-card: #353a45;
+    --border: #434956;
+    --border-active: #545c6b;
+    --text: #eaecf0;
+    --text-secondary: #a0a8b8;
+    --text-muted: #6e7787;
+    --green: #34d399;
+    --green-muted: rgba(52, 211, 153, 0.15);
+    --red: #f87171;
+    --red-muted: rgba(248, 113, 113, 0.15);
+    --gray: #6e7787;
+    --gray-muted: rgba(110, 119, 135, 0.25);
+    --chart-bg: #393f4a;
+    --chart-grid: #434956;
+    --font-mono: "JetBrains Mono", monospace;
+    --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  body {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  @media (max-width: 600px) {
+    body { padding: 16px; }
+  }
+
+  .header { margin-bottom: 28px; }
+  .header .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .header h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin-top: 4px;
+    letter-spacing: -0.5px;
+  }
+  .header .meta {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .stats {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    flex: 1;
+    min-width: 130px;
+  }
+  .stat .value {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .stat .sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+  .stat.highlight { border-color: var(--green); }
+  .stat .value.green { color: var(--green); }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 600px) {
+    .card { padding: 16px; border-radius: 10px; }
+  }
+  .card-header { margin-bottom: 16px; }
+  .card-title { font-size: 14px; font-weight: 600; }
+  .card-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  #chart { width: 100%; height: 400px; }
+
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 12px;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .legend-line {
+    width: 14px;
+    height: 2px;
+    flex-shrink: 0;
+    border-radius: 1px;
+  }
+
+  .table-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .filters { display: flex; gap: 6px; }
+  .filter-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font-body);
+    transition: all 0.15s;
+  }
+  .filter-btn.active {
+    background: var(--green-muted);
+    border-color: var(--green);
+    color: var(--green);
+    font-weight: 500;
+  }
+  .filter-btn:hover { border-color: var(--border-active); }
+
+  table {
+    width: 100%;
+    font-size: 12px;
+    border-collapse: collapse;
+  }
+  th {
+    padding: 8px;
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  th:hover { color: var(--text-secondary); }
+  td { padding: 8px; border-bottom: 1px solid var(--bg); }
+  tr:hover td { background: var(--bg); }
+  td.mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  td.metric {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+  }
+  .badge.keep { background: var(--green-muted); color: var(--green); }
+  .badge.discard { background: var(--gray-muted); color: var(--text-muted); }
+  .badge.crash { background: var(--red-muted); color: var(--red); }
+
+  .live-indicator {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .dot.live { background: var(--green); animation: pulse 2s infinite; }
+  .dot.static { background: var(--gray); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* custom plotly tooltip override */
+  .plotly .hoverlayer .hovertext rect {
+    rx: 8 !important;
+    ry: 8 !important;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="label">nanostate autoresearch</div>
+  <h1>Experiment Progress</h1>
+  <div class="meta" id="meta"></div>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Autotune Progress</div>
+    <div class="card-subtitle" id="chart-subtitle">Experiment outcomes over time</div>
+  </div>
+  <div id="chart"></div>
+  <div class="chart-legend" id="chart-legend"></div>
+</div>
+
+<div class="card">
+  <div class="table-controls">
+    <div class="card-header" style="margin-bottom:0">
+      <div class="card-title">Experiment Log</div>
+      <div class="card-subtitle">Click column headers to sort</div>
+    </div>
+    <div class="filters" id="filters"></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th data-col="idx">#</th>
+        <th data-col="commit">Commit</th>
+        <th data-col="val_metric">Metric</th>
+        <th data-col="params">Params</th>
+        <th data-col="status">Status</th>
+        <th data-col="description">Description</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div class="live-indicator" id="live-indicator"></div>
+
+<script>
+var DATA = {"generated": "2026-03-10 22:55", "stats": {"task": "lm", "total": 20, "kept": 7, "discarded": 13, "crashes": 0, "keep_rate": 35.0, "best_metric": 2.2093, "higher_is_better": false}, "metric_key": "val_bpb", "metric_label": "Validation BPB", "lower_is_better": true, "rows": [{"idx": 0, "commit": "33f65fd", "task": "lm", "val_metric": 2.3249, "params": 431104, "params_fmt": "431K", "status": "keep", "description": "baseline"}, {"idx": 1, "commit": "c2945c0", "task": "lm", "val_metric": 2.3449, "params": 431104, "params_fmt": "431K", "status": "discard", "description": "S4D-Lin complex + ZOH + pre-norm (all at once)"}, {"idx": 2, "commit": "8945d00", "task": "lm", "val_metric": 2.5308, "params": 431104, "params_fmt": "431K", "status": "discard", "description": "dt init [0.001,0.1] only (too small for random A)"}, {"idx": 3, "commit": "da90ca7", "task": "lm", "val_metric": 2.3031, "params": 431104, "params_fmt": "431K", "status": "keep", "description": "pre-norm residual blocks"}, {"idx": 4, "commit": "66185fb", "task": "lm", "val_metric": 2.407, "params": 431104, "params_fmt": "431K", "status": "discard", "description": "HiPPO A init only (dt=1.0 kills most states)"}, {"idx": 5, "commit": "6f0be69", "task": "lm", "val_metric": 2.4647, "params": 431104, "params_fmt": "431K", "status": "discard", "description": "HiPPO A + dt [0.001,0.1] paired"}, {"idx": 6, "commit": "da90ca7", "task": "lm", "val_metric": 2.2945, "params": 2013440, "params_fmt": "2.0M", "status": "keep", "description": "d=256 n_layers=6 (env var sweep)"}, {"idx": 7, "commit": "da90ca7", "task": "lm", "val_metric": 2.3574, "params": 2640640, "params_fmt": "2.6M", "status": "discard", "description": "d=256 n_layers=8 lr=3e-4 (underfit at 1000 steps)"}, {"idx": 8, "commit": "da90ca7", "task": "lm", "val_metric": 2.239, "params": 2865664, "params_fmt": "2.9M", "status": "keep", "description": "d=384 n_layers=4 (wider, same depth)"}, {"idx": 9, "commit": "da90ca7", "task": "lm", "val_metric": 2.2555, "params": 4869376, "params_fmt": "4.9M", "status": "discard", "description": "d=512 n_layers=4 (too wide, diminishing returns)"}, {"idx": 10, "commit": "da90ca7", "task": "lm", "val_metric": 2.2718, "params": 4199680, "params_fmt": "4.2M", "status": "discard", "description": "d=384 n_layers=6 (more depth underfits at 1000 steps)"}, {"idx": 11, "commit": "a52f3c0", "task": "lm", "val_metric": 2.3776, "params": 2865664, "params_fmt": "2.9M", "status": "discard", "description": "d=384 2000 steps (overfits: train 1.04 val 1.65)"}, {"idx": 12, "commit": "9820e7e", "task": "lm", "val_metric": 2.2665, "params": 2865664, "params_fmt": "2.9M", "status": "discard", "description": "AdamW weight_decay=0.1 (hurts at 1000 steps)"}, {"idx": 13, "commit": "5eca1e3", "task": "lm", "val_metric": 2.2524, "params": 4343296, "params_fmt": "4.3M", "status": "keep", "description": "Mamba-style SiLU gated block (replaces SSM+MLP)"}, {"idx": 14, "commit": "5eca1e3", "task": "lm", "val_metric": 2.3051, "params": 4343296, "params_fmt": "4.3M", "status": "discard", "description": "seq_len=512 (overfits more, 2x slower)"}, {"idx": 15, "commit": "5eca1e3", "task": "lm", "val_metric": 2.2225, "params": 4343296, "params_fmt": "4.3M", "status": "keep", "description": "lr=5e-4 (env var sweep)"}, {"idx": 16, "commit": "5eca1e3", "task": "lm", "val_metric": 2.2541, "params": 4343296, "params_fmt": "4.3M", "status": "discard", "description": "lr=3e-4 (too slow to converge in 1000 steps)"}, {"idx": 17, "commit": "15559a0", "task": "lm", "val_metric": 2.2617, "params": 4343296, "params_fmt": "4.3M", "status": "discard", "description": "output proj scaling + grad clip (hurts at L=4)"}, {"idx": 18, "commit": "27d609c", "task": "lm", "val_metric": 2.2728, "params": 3900928, "params_fmt": "3.9M", "status": "discard", "description": "state_dim=16 (LTI still benefits from N=64)"}, {"idx": 19, "commit": "4fb1b69", "task": "lm", "val_metric": 2.2093, "params": 4343296, "params_fmt": "4.3M", "status": "keep", "description": "cosine LR decay with 100-step warmup"}]};
+var isLive = false;
+var currentFilter = 'all';
+var sortCol = 'idx';
+var sortAsc = true;
+
+function render(data) {
+  var s = data.stats;
+  var mk = data.metric_key;
+
+  // meta
+  document.getElementById('meta').textContent =
+    'Task: ' + s.task + '  \u00b7  Updated: ' + data.generated;
+
+  // chart subtitle
+  document.getElementById('chart-subtitle').textContent =
+    s.total + ' experiments, ' + s.kept + ' kept improvements';
+
+  // stats (DOM-safe)
+  var best = s.best_metric !== null ? s.best_metric.toFixed(4) : '\u2014';
+  var improvement = '';
+  if (s.best_metric !== null && data.rows.length > 0) {
+    var baseline = null;
+    for (var i = 0; i < data.rows.length; i++) {
+      if (data.rows[i].status === 'keep' && data.rows[i].val_metric !== null) {
+        baseline = data.rows[i].val_metric; break;
+      }
+    }
+    if (baseline !== null && baseline !== s.best_metric) {
+      var pct = ((baseline - s.best_metric) / baseline * 100).toFixed(1);
+      improvement = (data.lower_is_better ? '-' : '+') + pct + '% from baseline';
+    }
+  }
+
+  var statsEl = document.getElementById('stats');
+  while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+  var statsData = [
+    { value: best, label: 'Best ' + mk, sub: improvement, cls: 'green', highlight: true },
+    { value: String(s.total), label: 'Experiments', sub: '', cls: '', highlight: false },
+    { value: String(s.kept), label: 'Kept', sub: s.keep_rate.toFixed(1) + '% keep rate', cls: 'green', highlight: false },
+    { value: String(s.discarded), label: 'Discarded', sub: '', cls: '', highlight: false },
+    { value: String(s.crashes), label: 'Crashes', sub: '', cls: '', highlight: false },
+  ];
+  statsData.forEach(function(item) {
+    var div = document.createElement('div');
+    div.className = 'stat' + (item.highlight ? ' highlight' : '');
+    var valDiv = document.createElement('div');
+    valDiv.className = 'value' + (item.cls ? ' ' + item.cls : '');
+    valDiv.textContent = item.value;
+    div.appendChild(valDiv);
+    var labDiv = document.createElement('div');
+    labDiv.className = 'label';
+    labDiv.textContent = item.label;
+    div.appendChild(labDiv);
+    if (item.sub) {
+      var subDiv = document.createElement('div');
+      subDiv.className = 'sub';
+      subDiv.textContent = item.sub;
+      div.appendChild(subDiv);
+    }
+    statsEl.appendChild(div);
+  });
+
+  renderChart(data);
+  renderLegend();
+  renderFilters();
+  renderTable(data);
+
+  // live indicator
+  var indEl = document.getElementById('live-indicator');
+  while (indEl.firstChild) indEl.removeChild(indEl.firstChild);
+  var dot = document.createElement('span');
+  dot.className = isLive ? 'dot live' : 'dot static';
+  indEl.appendChild(dot);
+  indEl.appendChild(document.createTextNode(
+    isLive ? 'Live \u2014 refreshing every 30s' : 'Static snapshot \u2014 ' + data.generated
+  ));
+}
+
+function renderChart(data) {
+  var rows = data.rows;
+  var kept = rows.filter(function(r) { return r.status === 'keep' && r.val_metric !== null; });
+  var discarded = rows.filter(function(r) { return r.status === 'discard' && r.val_metric !== null; });
+  var crashes = rows.filter(function(r) { return r.status === 'crash' && r.val_metric !== null; });
+
+  var bestX = [], bestY = [], running = null;
+  var hb = data.stats.higher_is_better;
+  kept.forEach(function(r) {
+    if (running === null) running = r.val_metric;
+    else running = hb ? Math.max(running, r.val_metric) : Math.min(running, r.val_metric);
+    bestX.push(r.idx);
+    bestY.push(running);
+  });
+
+  var traces = [
+    {
+      x: discarded.map(function(r){return r.idx;}),
+      y: discarded.map(function(r){return r.val_metric;}),
+      mode: 'markers', type: 'scatter', name: 'Discarded', showlegend: false,
+      marker: { color: '#6e7787', size: 6, opacity: 0.7 },
+      text: discarded.map(function(r){return r.description;}),
+      customdata: discarded.map(function(r){return [r.commit, r.params_fmt];}),
+      hovertemplate: '<b>%{text}</b><br>%{y:.4f}<br>%{customdata[0]} \u00b7 %{customdata[1]}<extra>#%{x}</extra>',
+    },
+    {
+      x: crashes.map(function(r){return r.idx;}),
+      y: crashes.map(function(r){return r.val_metric;}),
+      mode: 'markers', type: 'scatter', name: 'Crash', showlegend: false,
+      marker: { color: '#f87171', size: 8, symbol: 'x', line: { width: 2 } },
+      text: crashes.map(function(r){return r.description;}),
+      customdata: crashes.map(function(r){return [r.commit, r.params_fmt];}),
+      hovertemplate: '<b>%{text}</b><br>CRASH<br>%{customdata[0]}<extra>#%{x}</extra>',
+    },
+    {
+      x: kept.map(function(r){return r.idx;}),
+      y: kept.map(function(r){return r.val_metric;}),
+      mode: 'markers', type: 'scatter', name: 'Kept', showlegend: false,
+      marker: { color: '#34d399', size: 9 },
+      text: kept.map(function(r){return r.description;}),
+      customdata: kept.map(function(r){return [r.commit, r.params_fmt];}),
+      hovertemplate: '<b>%{text}</b><br>%{y:.4f}<br>%{customdata[0]} \u00b7 %{customdata[1]}<extra>#%{x} \u2714</extra>',
+    },
+    {
+      x: bestX, y: bestY,
+      mode: 'lines', type: 'scatter', name: 'Running best', showlegend: false,
+      line: { color: 'rgba(52, 211, 153, 0.35)', width: 2, shape: 'hv' },
+      hoverinfo: 'skip',
+    },
+  ];
+
+  var layout = {
+    xaxis: {
+      title: { text: 'Experiment #', font: { size: 12, color: '#5c6478' } },
+      gridcolor: '#434956', zeroline: false,
+      tickfont: { family: 'JetBrains Mono', size: 11, color: '#6e7787' },
+    },
+    yaxis: {
+      title: { text: data.metric_label, font: { size: 12, color: '#6e7787' } },
+      gridcolor: '#434956', zeroline: false,
+      autorange: data.lower_is_better ? 'reversed' : true,
+      tickfont: { family: 'JetBrains Mono', size: 11, color: '#6e7787' },
+    },
+    plot_bgcolor: '#393f4a',
+    paper_bgcolor: '#353a45',
+    margin: { l: 60, r: 20, t: 10, b: 50 },
+    showlegend: false,
+    font: { family: 'Inter, -apple-system, sans-serif', size: 12 },
+    hovermode: 'closest',
+    hoverlabel: {
+      bgcolor: '#353a45',
+      bordercolor: '#434956',
+      font: { family: 'JetBrains Mono, monospace', size: 11, color: '#eaecf0' },
+    },
+  };
+
+  Plotly.newPlot('chart', traces, layout, { responsive: true, displayModeBar: false });
+}
+
+function renderLegend() {
+  var container = document.getElementById('chart-legend');
+  while (container.firstChild) container.removeChild(container.firstChild);
+  var items = [
+    { type: 'dot', color: '#6e7787', label: 'Discarded' },
+    { type: 'dot', color: '#34d399', label: 'Kept' },
+    { type: 'dot', color: '#f87171', label: 'Crash' },
+    { type: 'line', color: 'rgba(52, 211, 153, 0.35)', label: 'Running best' },
+  ];
+  items.forEach(function(item) {
+    var div = document.createElement('div');
+    div.className = 'legend-item';
+    var indicator = document.createElement('span');
+    indicator.className = item.type === 'dot' ? 'legend-dot' : 'legend-line';
+    indicator.style.backgroundColor = item.color;
+    div.appendChild(indicator);
+    var text = document.createElement('span');
+    text.textContent = item.label;
+    div.appendChild(text);
+    container.appendChild(div);
+  });
+}
+
+function renderFilters() {
+  var container = document.getElementById('filters');
+  while (container.firstChild) container.removeChild(container.firstChild);
+  ['all', 'keep', 'discard', 'crash'].forEach(function(f) {
+    var btn = document.createElement('button');
+    btn.className = 'filter-btn' + (currentFilter === f ? ' active' : '');
+    btn.textContent = f === 'all' ? 'All' : f === 'keep' ? 'Kept' : f === 'discard' ? 'Discarded' : 'Crashes';
+    btn.addEventListener('click', function() { filterTable(f); });
+    container.appendChild(btn);
+  });
+}
+
+function renderTable(data) {
+  var rows = data.rows.slice();
+
+  if (currentFilter !== 'all') {
+    rows = rows.filter(function(r) { return r.status === currentFilter; });
+  }
+
+  rows.sort(function(a, b) {
+    var va = a[sortCol], vb = b[sortCol];
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase(); }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+
+  var tbody = document.getElementById('tbody');
+  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+  rows.forEach(function(r) {
+    var tr = document.createElement('tr');
+
+    var tdIdx = document.createElement('td');
+    tdIdx.className = 'mono';
+    tdIdx.textContent = r.idx;
+    tr.appendChild(tdIdx);
+
+    var tdCommit = document.createElement('td');
+    tdCommit.className = 'mono';
+    tdCommit.textContent = r.commit;
+    tr.appendChild(tdCommit);
+
+    var tdMetric = document.createElement('td');
+    tdMetric.className = 'metric';
+    tdMetric.textContent = r.val_metric !== null ? r.val_metric.toFixed(4) : '\u2014';
+    tr.appendChild(tdMetric);
+
+    var tdParams = document.createElement('td');
+    tdParams.className = 'mono';
+    tdParams.textContent = r.params ? r.params_fmt : '\u2014';
+    tr.appendChild(tdParams);
+
+    var tdStatus = document.createElement('td');
+    if (r.status) {
+      var badge = document.createElement('span');
+      badge.className = 'badge ' + r.status;
+      badge.textContent = r.status;
+      tdStatus.appendChild(badge);
+    }
+    tr.appendChild(tdStatus);
+
+    var tdDesc = document.createElement('td');
+    tdDesc.textContent = r.description || '';
+    tr.appendChild(tdDesc);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function filterTable(status) {
+  currentFilter = status;
+  renderFilters();
+  renderTable(DATA);
+}
+
+document.querySelectorAll('th[data-col]').forEach(function(th) {
+  th.addEventListener('click', function() {
+    var col = th.getAttribute('data-col');
+    if (sortCol === col) { sortAsc = !sortAsc; }
+    else { sortCol = col; sortAsc = true; }
+    renderTable(DATA);
+  });
+});
+
+render(DATA);
+
+setInterval(function() {
+  fetch('results.json?t=' + Date.now())
+    .then(function(resp) { if (resp.ok) return resp.json(); throw new Error(); })
+    .then(function(data) { DATA = data; isLive = true; render(DATA); })
+    .catch(function() {});
+}, 30000);
+
+fetch('results.json?t=' + Date.now())
+  .then(function(resp) { if (resp.ok) return resp.json(); throw new Error(); })
+  .then(function(data) { DATA = data; isLive = true; render(DATA); })
+  .catch(function() {});
+</script>
+</body>
+</html>

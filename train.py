@@ -34,14 +34,14 @@ from data import (
 # ---------------------------------------------------------------------------
 
 # model (override via NS_* env vars for sweeps)
-D_MODEL = int(os.environ.get("NS_D_MODEL", 128))
+D_MODEL = int(os.environ.get("NS_D_MODEL", 384))
 N_LAYERS = int(os.environ.get("NS_N_LAYERS", 4))
 STATE_DIM = int(os.environ.get("NS_STATE_DIM", 64))
 MLP_RATIO = 2
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
-LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
+LEARNING_RATE = float(os.environ.get("NS_LR", 5e-4))
 MAX_STEPS = int(os.environ.get("NS_STEPS", 1000))
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
@@ -109,23 +109,24 @@ class S4DLayer(nn.Module):
 
 
 class SSMBlock(nn.Module):
-    """SSM -> LayerNorm -> MLP -> LayerNorm (post-norm residual)."""
+    """Mamba-style gated block: LN -> expand -> SSM + SiLU gate -> project down."""
 
     def __init__(self, d_model: int, state_dim: int, mlp_ratio: int = 2):
         super().__init__()
-        self.ssm = S4DLayer(d_model, state_dim)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, d_model * mlp_ratio),
-            nn.GELU(),
-            nn.Linear(d_model * mlp_ratio, d_model),
-        )
-        self.norm2 = nn.LayerNorm(d_model)
+        d_inner = d_model * mlp_ratio
+        self.norm = nn.LayerNorm(d_model)
+        self.in_proj = nn.Linear(d_model, d_inner * 2)  # SSM path + gate path
+        self.ssm = S4DLayer(d_inner, state_dim)
+        self.out_proj = nn.Linear(d_inner, d_model)
 
     def __call__(self, x):
-        x = self.norm1(x + self.ssm(x))
-        x = self.norm2(x + self.mlp(x))
-        return x
+        residual = x
+        x = self.norm(x)
+        xz = self.in_proj(x)
+        x_ssm, z = mx.split(xz, 2, axis=-1)
+        x_ssm = self.ssm(x_ssm)
+        y = x_ssm * nn.silu(z)  # SiLU gating
+        return residual + self.out_proj(y)
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +286,16 @@ def main():
     n_params = count_params(model)
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
 
-    optimizer = optim.Adam(learning_rate=lr)
+    # Cosine decay with linear warmup
+    warmup_steps = min(100, max_steps // 10)
+    lr_schedule = optim.schedulers.join_schedules(
+        [
+            optim.schedulers.linear_schedule(1e-7, lr, warmup_steps),
+            optim.schedulers.cosine_decay(lr, max_steps - warmup_steps, 1e-5),
+        ],
+        [warmup_steps],
+    )
+    optimizer = optim.Adam(learning_rate=lr_schedule)
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
 
