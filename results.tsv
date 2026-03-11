@@ -21,3 +21,12 @@ a7eda3d	lm	2.2314	1065856	discard	NS_BATCH_SIZE=48
 4adcdb7	lm	2.2354	1065856	discard	NS_LR=2e-3 (bs=64)
 4adcdb7	lm	2.2505	1065856	discard	NS_LR=5e-4 (bs=64)
 edd8b30	lm	2.2075	1065856	keep	1/sqrt(n_layers) output scaling
+edd8b30	lm	2.2283	1814272	discard	NS_D_MODEL=256 (slow, overfitting)
+e93ad3e	lm	2.2404	1065856	discard	dropout 0.1 in gated block
+9b66702	lm	2.2689	1065856	discard	HiPPO B init: B_n = sqrt(2n+1)
+2884659	lm	2.4358	1657216	discard	selective scan (input-dep dt), too slow
+b2bd00c	lm	2.2247	1064896	discard	RMSNorm instead of LayerNorm
+541a5c9	lm	2.2245	1065856	discard	coupled S4D-Lin A + dt=0.1
+24889a9	lm	2.3228	1065856	discard	label smoothing 0.1
+a5a8695	lm	2.2494	1549312	discard	NS_N_LAYERS=6 (overfitting, slow)
+a0f387c	lm	2.1858	1016448	keep	weight tying (embed=head)
