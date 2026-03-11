@@ -105,6 +105,25 @@ uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
 
 The inference state is a fixed-size vector (d_model x state_dim x n_layers x 4 bytes). For the default model that's 128KB. Generating the millionth token costs the same as the first.
 
+## State visualization
+
+Watch what the model "remembers" as it reads text. Generates an interactive HTML heatmap of the hidden state (something only SSMs can do, since transformers have no fixed state to inspect).
+
+![State viewer](assets/state_viewer.gif)
+
+```bash
+# Visualize state for a text string
+uv run python visualize.py checkpoints/lm "To be, or not to be, that is the question"
+
+# From a file (first 500 chars)
+uv run python visualize.py checkpoints/lm --file data/shakespeare.txt --max-chars 500
+
+# Custom output path
+uv run python visualize.py checkpoints/lm "Hello world" -o reports/state.html
+```
+
+The viewer shows state magnitude per channel as a heatmap, with layer toggle, norm/delta views, play/pause animation, and next-token predictions. Open the generated HTML in any browser.
+
 ## References
 
 If you're new to SSMs, these are worth your time (roughly in order of accessibility):
