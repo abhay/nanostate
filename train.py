@@ -42,7 +42,7 @@ MLP_RATIO = 2
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
 LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
-MAX_STEPS = int(os.environ.get("NS_STEPS", 2000))
+MAX_STEPS = int(os.environ.get("NS_STEPS", 1000))
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
 
