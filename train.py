@@ -45,7 +45,7 @@ MLP_RATIO = 2
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
 LEARNING_RATE = float(os.environ.get("NS_LR", 7e-4))
-MAX_STEPS = int(os.environ.get("NS_STEPS", 1000))
+MAX_STEPS_DEFAULT = {"lm": 1000, "lm-tok": 3000, "dna": 1000, "ts": 1000}
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
 
@@ -265,16 +265,16 @@ def count_params(model):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
-    parser.add_argument("--steps", type=int, default=MAX_STEPS)
+    parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
     args = parser.parse_args()
 
     batch_size = args.batch
-    max_steps = args.steps
-    lr = args.lr
     task = args.task
+    max_steps = args.steps or int(os.environ.get("NS_STEPS", MAX_STEPS_DEFAULT.get(task, 1000)))
+    lr = args.lr
 
     # --- data ---
     if task == "lm":
