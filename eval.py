@@ -263,8 +263,8 @@ def main():
     print(f"Model: d={d}, L={n_layers}, N={n} | {n_params:,} params | task={task}", file=sys.stderr)
 
     if args.benchmark:
-        if task not in ("lm", "lm-tok"):
-            print(f"Benchmarks require an LM model, got '{task}'", file=sys.stderr)
+        if task != "lm-tok":
+            print(f"Benchmarks require a BPE model (lm-tok), got '{task}'", file=sys.stderr)
             sys.exit(1)
 
         import tiktoken

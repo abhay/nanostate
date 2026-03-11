@@ -37,9 +37,11 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 3 | 2.2390 | 2.9M | scale to d=384, L=4 | `da90ca7` |
 | 4 | 2.2524 | 4.3M | Mamba-style SiLU gated block | `8ebefd9` |
 | 5 | 2.2225 | 4.3M | lr=5e-4 | `ffc50ee` |
-| 6 | **2.2093** | **4.3M** | **cosine LR decay + warmup** | `7bbf711` |
+| 6 | 2.2093 | 4.3M | cosine LR decay + warmup | `7bbf711` |
+| 7 | 2.1838 | 4.3M | HiPPO-LegS initialization | `ea2016b` |
+| 8 | **2.1745** | **4.3M** | **lr=7e-4** | `6a6c03f` |
 
-*20 experiments across the first autoresearch run ([details](#all-experiments)).*
+*37 experiments across two autoresearch runs ([details](#all-experiments)).*
 
 <details>
 <summary><a id="all-experiments"></a>All experiments (including discards)</summary>
@@ -66,6 +68,27 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 2.2617 | 4.3M | discard | output proj scaling + grad clip | `15559a0` |
 | 2.2728 | 3.9M | discard | state_dim=16 | `27d609c` |
 | 2.2093 | 4.3M | keep | cosine LR decay + 100-step warmup | `7bbf711` |
+| 2.1838 | 4.3M | keep | HiPPO-LegS A+B init (mar11 baseline) | `ea2016b` |
+| 2.1889 | 4.4M | discard | depthwise conv1d(k=4) + SiLU before SSM | `8b65172` |
+| 2.2289 | 4.3M | discard | embed scaling sqrt(d_model) | `844e924` |
+| 2.2267 | 4.3M | discard | dropout=0.1 after gating | `afa5eb1` |
+| 2.1745 | 4.3M | keep | lr=7e-4 | `6a6c03f` |
+| 2.1776 | 4.3M | discard | lr=8e-4 | `ea2016b` |
+| 2.1884 | 4.3M | discard | lr=1e-3 | `ea2016b` |
+
+**lm-tok (FineWebEdu BPE, 50K vocab)**
+
+| val_bpb | Params | Status | Description | Commit |
+|---------|--------|--------|-------------|--------|
+| 8.0317 | 42.8M | keep | baseline lm-tok (d=384, L=4, 1000 steps) | `6a6c03f` |
+| 8.1958 | 27.8M | discard | d=256 | `6a6c03f` |
+| 8.5324 | 13.5M | discard | d=128 (too small for 50K vocab) | `6a6c03f` |
+| 8.3892 | 42.8M | discard | batch=16 (fewer tokens seen) | `6a6c03f` |
+| 8.1799 | 23.4M | discard | weight tying embed/head | `5710b41` |
+| 7.4744 | 42.8M | keep | 3000 steps (24.6M tokens seen) | `6a6c03f` |
+| 7.5317 | 23.4M | discard | weight tying + 3000 steps | `77b9f30` |
+| 7.4754 | 44.9M | discard | L=6, 3000 steps (same as L=4) | `342c455` |
+| 7.5124 | 42.8M | discard | lr=1e-3, 3000 steps | `342c455` |
 
 </details>
 
@@ -100,7 +123,7 @@ uv run python train.py --task ts        # time series forecasting
 Or reproduce the current best result in one shot:
 
 ```bash
-bash runs/speedrun.sh    # ~2.19 val_bpb in 84s on M1 Max
+bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max
 ```
 
 ## Generation
