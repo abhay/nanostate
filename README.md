@@ -22,7 +22,7 @@ Then make it better.
 - Diagonal State Space layers (S4D)
 - Mamba-style SiLU gated blocks (pre-norm)
 - Cosine LR decay with linear warmup
-- Random initialization (no HiPPO yet)
+- HiPPO-LegS initialization (principled A matrix + matched dt range)
 
 This runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh.
 
@@ -97,6 +97,12 @@ uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
 
+Or reproduce the current best result in one shot:
+
+```bash
+bash runs/speedrun.sh    # ~2.19 val_bpb in 84s on M1 Max
+```
+
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
@@ -116,6 +122,20 @@ uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
 ```
 
 The inference state is a fixed-size vector (d_inner x state_dim x n_layers x 4 bytes). For the default model that's 768KB. Generating the millionth token costs the same as the first.
+
+## Evaluation
+
+Evaluate a checkpoint on its validation set or run standardized benchmarks. Prints results as JSON.
+
+```bash
+# Validation loss
+uv run python eval.py checkpoints/lm
+uv run python eval.py checkpoints/lm_tok --steps 50 --batch 64
+
+# Standardized benchmarks (auto-downloads data on first run)
+uv run python eval.py checkpoints/lm_tok --benchmark hellaswag
+uv run python eval.py checkpoints/lm_tok --benchmark piqa
+```
 
 ## State visualization
 
