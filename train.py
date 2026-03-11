@@ -160,9 +160,10 @@ class SSMBlock(nn.Module):
 
 
 class NanoSSM(nn.Module):
-    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96):
+    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96, block_type: str = "s4d"):
         super().__init__()
         self.task = task
+        self.block_type = block_type
 
         # embedding
         if task in ("lm", "lm-tok"):
@@ -173,7 +174,12 @@ class NanoSSM(nn.Module):
             self.embed = nn.Linear(n_features, D_MODEL)
 
         # shared backbone
-        self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
+        if block_type == "ssd":
+            from ssd import SSDBlock
+
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM) for _ in range(N_LAYERS)]
+        else:
+            self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
 
         # task head
@@ -281,6 +287,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
     parser.add_argument("--size", choices=list(SIZE_PRESETS), default=None, help="Model size preset (overridden by NS_* env vars)")
+    parser.add_argument("--block", choices=["s4d", "ssd"], default="s4d", help="Block type: s4d (FFT conv) or ssd (Mamba-2 selective)")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
@@ -301,6 +308,7 @@ def main():
 
     batch_size = args.batch
     task = args.task
+    block_type = args.block
     max_steps = args.steps or int(os.environ.get("NS_STEPS", MAX_STEPS_DEFAULT.get(task, 1000)))
     lr = args.lr
 
@@ -308,21 +316,21 @@ def main():
     if task == "lm":
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
-        model = NanoSSM("lm")
+        model = NanoSSM("lm", block_type=block_type)
     elif task == "lm-tok":
         train_data = load_fineweb("train")
         val_data = load_fineweb("val")
         vocab_size = get_fineweb_vocab_size()
-        model = NanoSSM("lm-tok", vocab_size=vocab_size)
+        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type)
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
-        model = NanoSSM("dna", n_classes=n_classes)
+        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type)
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
         val_data = load_ett("val", ETT_VARIANT)
         n_features = train_data.shape[1]
-        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN)
+        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type)
 
     # materialize parameters
     mx.eval(model.parameters())
@@ -367,6 +375,7 @@ def main():
             "n_layers": N_LAYERS,
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
+            "block_type": block_type,
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size

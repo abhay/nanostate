@@ -38,6 +38,8 @@ def load_model(checkpoint_dir):
     kwargs = {}
     if config.get("vocab_size"):
         kwargs["vocab_size"] = config["vocab_size"]
+    if config.get("block_type"):
+        kwargs["block_type"] = config["block_type"]
     model = train_module.NanoSSM(config["task"], **kwargs)
     model.load_weights(os.path.join(checkpoint_dir, "model.npz"))
     mx.eval(model.parameters())
@@ -57,11 +59,18 @@ class RecurrentState:
 
     def __init__(self, model):
         self.model = model
+        self._block_type = getattr(model, "block_type", "s4d")
 
+        if self._block_type == "ssd":
+            self._init_ssd()
+        else:
+            self._init_s4d()
+
+    def _init_s4d(self):
         # Pre-compute discrete parameters and init zero state per layer
         self._layers = []
         self.states = []
-        for block in model.blocks:
+        for block in self.model.blocks:
             ssm = block.ssm
             dt = mx.exp(ssm.log_dt)  # (d_inner,) or (d_model,)
             A = -mx.exp(ssm.log_A)  # (d_inner, N) or (d_model, N)
@@ -73,7 +82,22 @@ class RecurrentState:
         mx.eval(self.states)
 
         # Detect block type: gated (Mamba-style) vs classic (SSM+MLP)
-        self._gated = hasattr(model.blocks[0], "in_proj")
+        self._gated = hasattr(self.model.blocks[0], "in_proj")
+
+    def _init_ssd(self):
+        # SSD state: (n_heads, d_head, d_state) per layer
+        self.states = []
+        self._conv_bufs = []
+        for block in self.model.blocks:
+            ssd = block.ssd
+            n_heads = ssd.n_heads
+            d_head = ssd.d_head
+            d_state = ssd.d_state
+            self.states.append(mx.zeros((n_heads, d_head, d_state)))
+            # Conv1d buffer: last (kernel_size - 1) inputs
+            d_inner = block.in_proj.weight.shape[0] // 2
+            self._conv_bufs.append(mx.zeros((block.conv_pad, d_inner)))
+        mx.eval(self.states, self._conv_bufs)
 
     def _silu(self, x):
         return x * mx.sigmoid(x)
@@ -86,6 +110,17 @@ class RecurrentState:
         """
         x = self.model.embed(mx.array([token]))[0]  # (d_model,)
 
+        if self._block_type == "ssd":
+            x = self._step_ssd(x)
+        else:
+            x = self._step_s4d(x)
+
+        x = self.model.norm(x)
+        logits = self.model.head(x)
+        mx.eval(logits, *self.states)
+        return logits
+
+    def _step_s4d(self, x):
         for i, block in enumerate(self.model.blocks):
             A_d, B_d, C, D = self._layers[i]
 
@@ -110,14 +145,61 @@ class RecurrentState:
                 ssm_out = mx.sum(C * self.states[i], axis=1) + D * x
                 x = block.norm1(x + ssm_out)
                 x = block.norm2(x + block.mlp(x))
+        return x
 
-        x = self.model.norm(x)
-        logits = self.model.head(x)
-        mx.eval(logits, *self.states)
-        return logits
+    def _step_ssd(self, x):
+        for i, block in enumerate(self.model.blocks):
+            ssd = block.ssd
+            residual = x
+            x_norm = block.norm(x)
+
+            # Parallel projections
+            xz = block.in_proj(x_norm)
+            d_inner = xz.shape[0] // 2
+            x_raw, z = xz[:d_inner], xz[d_inner:]
+
+            # Causal conv1d: shift buffer and apply conv weights
+            self._conv_bufs[i] = mx.concatenate([self._conv_bufs[i][1:], x_raw[None, :]], axis=0)
+            # Manual conv: concat buffer + current, apply depthwise weights
+            conv_input = mx.concatenate([self._conv_bufs[i], x_raw[None, :]], axis=0)  # (kernel_size, d_inner)
+            # Conv1d weights: (d_inner, 1, kernel_size) in MLX
+            conv_w = block.conv1d.weight[:, 0, :]  # (d_inner, kernel_size)
+            x_conv = mx.sum(conv_w * conv_input.T, axis=1)  # (d_inner,)
+            if hasattr(block.conv1d, "bias") and block.conv1d.bias is not None:
+                x_conv = x_conv + block.conv1d.bias
+            x_conv = self._silu(x_conv)
+
+            # Input-dependent A, B, C
+            a = -self._softplus(ssd.a_proj(x_conv))  # (n_heads,)
+            b = ssd.b_proj(x_conv)  # (d_state,)
+            c = ssd.c_proj(x_conv)  # (d_state,)
+
+            # Reshape x for multi-head: (d_inner,) -> (n_heads, d_head)
+            x_heads = x_conv.reshape(ssd.n_heads, ssd.d_head)
+
+            # Recurrent SSD step: h = a * h + B * x, y = C^T * h
+            # a is scalar per head, h is (n_heads, d_head, d_state)
+            decay = mx.exp(a)  # (n_heads,)
+            self.states[i] = decay[:, None, None] * self.states[i] + x_heads[:, :, None] * b[None, None, :]
+            # Output: y = C^T * h + D * x
+            y_heads = mx.sum(self.states[i] * c[None, None, :], axis=2)  # (n_heads, d_head)
+            y = y_heads.reshape(-1) + ssd.D * x_conv  # (d_inner,)
+
+            # Gate and project
+            y = y * self._silu(z)
+            x = residual + block.out_proj(y)
+        return x
+
+    def _softplus(self, x):
+        return mx.log(1 + mx.exp(x))
 
     def reset(self):
         """Reset hidden state to zeros."""
         for i in range(len(self.states)):
             self.states[i] = mx.zeros_like(self.states[i])
-        mx.eval(self.states)
+        if self._block_type == "ssd":
+            for i in range(len(self._conv_bufs)):
+                self._conv_bufs[i] = mx.zeros_like(self._conv_bufs[i])
+            mx.eval(self.states, self._conv_bufs)
+        else:
+            mx.eval(self.states)
