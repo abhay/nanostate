@@ -34,7 +34,7 @@ from data import (
 # ---------------------------------------------------------------------------
 
 # model (override via NS_* env vars for sweeps)
-D_MODEL = int(os.environ.get("NS_D_MODEL", 128))
+D_MODEL = int(os.environ.get("NS_D_MODEL", 384))
 N_LAYERS = int(os.environ.get("NS_N_LAYERS", 4))
 STATE_DIM = int(os.environ.get("NS_STATE_DIM", 64))
 MLP_RATIO = 2
@@ -42,7 +42,7 @@ MLP_RATIO = 2
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
 LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
-MAX_STEPS = int(os.environ.get("NS_STEPS", 1000))
+MAX_STEPS = int(os.environ.get("NS_STEPS", 2000))
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
 
