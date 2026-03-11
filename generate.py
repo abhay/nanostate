@@ -8,6 +8,7 @@ Usage:
   python generate.py checkpoints/lm --prompt "ROMEO: "
   python generate.py checkpoints/lm --tokens 500 --temp 0.7
   python generate.py checkpoints/lm --temp 0 --tokens 100  # greedy
+  python generate.py checkpoints/lm_tok --prompt "The meaning of life"
 """
 
 import argparse
@@ -44,35 +45,53 @@ def main():
     args = parser.parse_args()
 
     model, config = load_model(args.checkpoint)
-    if config["task"] != "lm":
-        print(f"Generation only supported for LM task, got '{config['task']}'", file=sys.stderr)
+    task = config["task"]
+    if task not in ("lm", "lm-tok"):
+        print(f"Generation only supported for LM tasks, got '{task}'", file=sys.stderr)
         sys.exit(1)
+
+    # Set up tokenizer for BPE mode
+    enc = None
+    if task == "lm-tok":
+        import tiktoken
+
+        enc = tiktoken.get_encoding("gpt2")
 
     state = RecurrentState(model)
 
     d, n_layers, n = config["d_model"], config["n_layers"], config["state_dim"]
     state_bytes = n_layers * d * n * 4
-    print(f"Model: d={d}, L={n_layers}, N={n} | state: {state_bytes:,} bytes", file=sys.stderr)
+    mode = "BPE" if enc else "byte"
+    print(f"Model: d={d}, L={n_layers}, N={n} | state: {state_bytes:,} bytes | {mode}", file=sys.stderr)
     print(f"Generating {args.tokens} tokens (temp={args.temp}, top_k={args.top_k})", file=sys.stderr)
     print("---", file=sys.stderr)
 
     # Feed prompt through model to build up state
     if args.prompt:
-        sys.stdout.buffer.write(args.prompt.encode("utf-8"))
-        sys.stdout.buffer.flush()
-        for b in args.prompt.encode("utf-8"):
-            logits = state.step(b)
+        sys.stdout.write(args.prompt)
+        sys.stdout.flush()
+        if enc:
+            prompt_tokens = enc.encode_ordinary(args.prompt)
+            for tok in prompt_tokens:
+                logits = state.step(tok)
+        else:
+            for b in args.prompt.encode("utf-8"):
+                logits = state.step(b)
         next_token = sample(logits, args.temp, args.top_k)
     else:
         # Start with newline
-        logits = state.step(ord("\n"))
+        start_token = enc.encode_ordinary("\n")[0] if enc else ord("\n")
+        logits = state.step(start_token)
         next_token = sample(logits, args.temp, args.top_k)
 
     # Generate
     t0 = time.time()
     for _ in range(args.tokens):
-        sys.stdout.buffer.write(bytes([next_token]))
-        sys.stdout.buffer.flush()
+        if enc:
+            sys.stdout.write(enc.decode([next_token]))
+        else:
+            sys.stdout.buffer.write(bytes([next_token]))
+        sys.stdout.flush()
 
         logits = state.step(next_token)
         next_token = sample(logits, args.temp, args.top_k)

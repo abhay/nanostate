@@ -35,7 +35,10 @@ def load_model(checkpoint_dir):
     train_module.STATE_DIM = config["state_dim"]
     train_module.MLP_RATIO = config.get("mlp_ratio", 2)
 
-    model = train_module.NanoSSM(config["task"])
+    kwargs = {}
+    if config.get("vocab_size"):
+        kwargs["vocab_size"] = config["vocab_size"]
+    model = train_module.NanoSSM(config["task"], **kwargs)
     model.load_weights(os.path.join(checkpoint_dir, "model.npz"))
     mx.eval(model.parameters())
     return model, config
