@@ -16,3 +16,6 @@ a52f3c0	lm	2.3776	2865664	discard	d=384 2000 steps (overfits: train 1.04 val 1.6
 5eca1e3	lm	2.3051	4343296	discard	seq_len=512 (overfits more, 2x slower)
 5eca1e3	lm	2.2225	4343296	keep	lr=5e-4 (env var sweep)
 5eca1e3	lm	2.2541	4343296	discard	lr=3e-4 (too slow to converge in 1000 steps)
+15559a0	lm	2.2617	4343296	discard	output proj scaling + grad clip (hurts at L=4)
+27d609c	lm	2.2728	3900928	discard	state_dim=16 (LTI still benefits from N=64)
+4fb1b69	lm	2.2093	4343296	keep	cosine LR decay with 100-step warmup
