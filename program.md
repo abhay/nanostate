@@ -58,7 +58,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **The goal is simple: get the lowest val_bpb** (for language modeling), **highest accuracy** (for DNA), or **lowest val_mse** (for time series). The model is deliberately naive; there are many known improvements to discover.
 
-**Memory** is a soft constraint. Apple Silicon has unified memory (16GB), and an OOM crash kills the whole system. The current model (d=384, L=4, N=64) uses ~42.8M params for lm-tok (mostly the 50K vocab embed+head). You still have headroom — d=512, L=8, N=128 should fit. For lm-tok, note that scaling d_model increases the embed/head tables linearly (50257×d_model each).
+**Memory** is a soft constraint. Apple Silicon has unified memory (16GB), and an OOM crash kills the whole system. Use `--size` to scale the model. The default (`small`, d=384, L=4) uses ~42.8M params for lm-tok. `medium` (d=768, L=6, ~100M lm-tok) should fit comfortably. `large` (d=1024, L=12, ~183M lm-tok) is the upper limit — test with a short run first. For lm-tok, scaling d_model increases the embed/head tables linearly (50257×d_model each), so most params are in the vocab projection.
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome.
 
@@ -115,11 +115,16 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar10`).
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Decide what to try. Two modes:
-   - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_D_MODEL, NS_N_LAYERS, NS_STATE_DIM, NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN) without editing code. No commit needed.
+2. Decide what to try. Three modes:
+   - **Size preset** (for scaling up/down): use `--size {tiny,small,medium,large}` to change model dimensions in one shot. No code edit needed.
+     - `tiny`: d=128, L=4 (~662K lm, ~13.5M lm-tok) — fast debugging
+     - `small`: d=384, L=4 (~4.3M lm, ~42.8M lm-tok) — default, quick iteration
+     - `medium`: d=768, L=6 (~23M lm, ~100M lm-tok) — serious training
+     - `large`: d=1024, L=12 (~81M lm, ~183M lm-tok) — pushing M1 Max limits
+   - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN) without editing code. `NS_D_MODEL`, `NS_N_LAYERS`, `NS_STATE_DIM` still work and override `--size`. No commit needed.
    - **Code change** (for architectural changes): edit `train.py` and git commit.
-   Use your judgment. Pure number tuning (lr, layer count, dimensions) → env vars. Structural changes (new init, gating, selectivity) → code edit.
-3. Run the experiment: `uv run python train.py --task lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Prepend env vars if sweeping, e.g. `NS_LR=3e-4 NS_D_MODEL=256 uv run python train.py --task lm > run.log 2>&1`.
+   Use your judgment. Model scaling → `--size`. Pure number tuning (lr, batch, seq_len) → env vars. Structural changes (new init, gating, selectivity) → code edit.
+3. Run the experiment: `uv run python train.py --task lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Use `--size` or prepend env vars if sweeping, e.g. `uv run python train.py --task lm --size medium > run.log 2>&1` or `NS_LR=3e-4 uv run python train.py --task lm > run.log 2>&1`.
 4. Parse the results: `grep -A1 METRICS run.log | head -1` gives a JSON blob with all metrics.
 5. If the output is empty or shows an error, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix.
 6. Record the results in results.tsv. For env var sweeps, note the env vars in the description column.
@@ -177,7 +182,7 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - Cosine decay min LR: currently decays to 1e-5. For longer runs, the final LR matters more.
 - Gradient accumulation: simulate larger effective batch size without more memory. Accumulate gradients over N steps before updating.
 - Weight decay may help on lm-tok (it hurt on lm where the model was overfitting TinyShakespeare, but lm-tok is in an underfitting regime).
-- Larger/smaller models, different layer counts.
+- Model scaling: use `--size medium` or `--size large` to test bigger models. If an idea works at `small`, validate at `medium` to check scaling.
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.
 

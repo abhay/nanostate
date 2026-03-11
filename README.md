@@ -126,6 +126,19 @@ Or reproduce the current best result in one shot:
 bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max
 ```
 
+## Model sizes
+
+One flag to scale the model up or down. Default is `small`.
+
+```bash
+uv run python train.py --size tiny     # d=128, L=4   |    662K params | ~30s
+uv run python train.py --size small    # d=384, L=4   |   4.3M params | ~80s (default)
+uv run python train.py --size medium   # d=768, L=6   |  23.4M params
+uv run python train.py --size large    # d=1024, L=12 |  80.9M params
+```
+
+For lm-tok, the 50K vocab embedding adds significant overhead (e.g. `small` = 42.8M params, `large` = 183M). The `NS_*` env vars override any preset for fine-grained control.
+
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
