@@ -24,9 +24,9 @@ This only needs to happen once. After that, the autonomous loop has everything i
 
 ## Setup
 
-To set up a new experiment, work with the user to:
+To set up a new experiment run:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar10`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
+1. **Pick a run tag**: Use the tag provided by the user, or default to today's date in `monDD` format (e.g. `mar10`). If the branch `autoresearch/<tag>` already exists, append a sequence number (e.g. `mar10-2`).
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
    - `README.md`: repository context and SSM references.
