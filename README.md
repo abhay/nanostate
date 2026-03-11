@@ -119,17 +119,16 @@ The inference state is a fixed-size vector (d_inner x state_dim x n_layers x 4 b
 
 ## Evaluation
 
-Evaluate a checkpoint on its validation set without retraining. Prints results as JSON.
+Evaluate a checkpoint on its validation set or run standardized benchmarks. Prints results as JSON.
 
 ```bash
-# Evaluate a byte-level LM checkpoint
+# Validation loss
 uv run python eval.py checkpoints/lm
-
-# Evaluate a BPE token-level checkpoint with more batches
 uv run python eval.py checkpoints/lm_tok --steps 50 --batch 64
 
-# Custom sequence length
-uv run python eval.py checkpoints/lm --seq-len 512
+# Standardized benchmarks (auto-downloads data on first run)
+uv run python eval.py checkpoints/lm_tok --benchmark hellaswag
+uv run python eval.py checkpoints/lm_tok --benchmark piqa
 ```
 
 ## State visualization
