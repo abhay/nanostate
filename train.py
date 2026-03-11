@@ -109,7 +109,7 @@ class S4DLayer(nn.Module):
 
 
 class SSMBlock(nn.Module):
-    """SSM -> LayerNorm -> MLP -> LayerNorm (post-norm residual)."""
+    """Pre-norm residual: LayerNorm -> SSM -> Add, LayerNorm -> MLP -> Add."""
 
     def __init__(self, d_model: int, state_dim: int, mlp_ratio: int = 2):
         super().__init__()
@@ -123,8 +123,8 @@ class SSMBlock(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
 
     def __call__(self, x):
-        x = self.norm1(x + self.ssm(x))
-        x = self.norm2(x + self.mlp(x))
+        x = x + self.ssm(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
         return x
 
 
