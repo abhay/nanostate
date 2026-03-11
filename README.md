@@ -26,15 +26,41 @@ Then make it better.
 
 Right now this runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh. We'll be looking at other architectures soon.
 
-## Baseline numbers
+## Leaderboard
 
-15K steps on an M1 Max, no tuning, random init. These are intentionally bad. That's the point.
+Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. The autoresearch agent runs experiments autonomously; each row is a commit.
 
-| Task | Dataset | Params | Step time | Metric |
-|------|---------|--------|-----------|--------|
-| Language modeling | TinyShakespeare (byte-level) | 431K | ~21ms | 2.57 BPB |
-| DNA classification | Nucleotide Transformer (promoter detection) | 366K | ~24ms | 85.7% accuracy |
-| Time series | ETT-h1 (electricity forecasting) | 367K | ~20ms | 0.94 MSE |
+| # | val_bpb | Params | Key change | Commit |
+|---|---------|--------|------------|--------|
+| 1 | 2.3249 | 431K | baseline (d=128, L=4, N=64) | `33f65fd` |
+| 2 | 2.3031 | 431K | pre-norm residual blocks | `da90ca7` |
+| 3 | 2.2945 | 2.0M | scale up: d=256, L=6 | `da90ca7` |
+| 4 | **2.2390** | **2.9M** | **wider: d=384, L=4** | `da90ca7` |
+
+*Autoresearch in progress. Updated live on the experiment branch.*
+
+<details>
+<summary>All experiments (including discards)</summary>
+
+| val_bpb | Params | Status | Description | Commit |
+|---------|--------|--------|-------------|--------|
+| 2.3249 | 431K | keep | baseline | `33f65fd` |
+| 2.3449 | 431K | discard | S4D-Lin complex + ZOH + pre-norm (all at once) | `c2945c0` |
+| 2.5308 | 431K | discard | dt init [0.001,0.1] only | `8945d00` |
+| 2.3031 | 431K | keep | pre-norm residual blocks | `da90ca7` |
+| 2.4070 | 431K | discard | HiPPO A init only (dt=1.0 kills most states) | `66185fb` |
+| 2.4647 | 431K | discard | HiPPO A + dt [0.001,0.1] paired | `6f0be69` |
+| 2.2945 | 2.0M | keep | d=256, n_layers=6 | `da90ca7` |
+| 2.3574 | 2.6M | discard | d=256, n_layers=8, lr=3e-4 (underfit) | `da90ca7` |
+| 2.2390 | 2.9M | keep | d=384, n_layers=4 | `da90ca7` |
+| 2.2555 | 4.9M | discard | d=512, n_layers=4 (diminishing returns) | `da90ca7` |
+| 2.2718 | 4.2M | discard | d=384, n_layers=6 (underfits at 1000 steps) | `da90ca7` |
+
+</details>
+
+### Baseline plots
+
+15K steps on M1 Max, no tuning, random init. These are intentionally bad. That's the point.
 
 **Language modeling** (byte-level Shakespeare, 431K params)
 
