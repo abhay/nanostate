@@ -70,7 +70,7 @@ class RecurrentState:
         mx.eval(self.states)
 
         # Detect block type: gated (Mamba-style) vs classic (SSM+MLP)
-        self._gated = hasattr(model.blocks[0], 'in_proj')
+        self._gated = hasattr(model.blocks[0], "in_proj")
 
     def _silu(self, x):
         return x * mx.sigmoid(x)
