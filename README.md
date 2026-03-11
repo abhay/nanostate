@@ -117,6 +117,21 @@ uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
 
 The inference state is a fixed-size vector (d_inner x state_dim x n_layers x 4 bytes). For the default model that's 768KB. Generating the millionth token costs the same as the first.
 
+## Evaluation
+
+Evaluate a checkpoint on its validation set without retraining. Prints results as JSON.
+
+```bash
+# Evaluate a byte-level LM checkpoint
+uv run python eval.py checkpoints/lm
+
+# Evaluate a BPE token-level checkpoint with more batches
+uv run python eval.py checkpoints/lm_tok --steps 50 --batch 64
+
+# Custom sequence length
+uv run python eval.py checkpoints/lm --seq-len 512
+```
+
 ## State visualization
 
 Watch what the model "remembers" as it reads text. Generates an interactive HTML heatmap of the hidden state (something only SSMs can do, since transformers have no fixed state to inspect).
