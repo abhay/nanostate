@@ -52,7 +52,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **The goal is simple: get the lowest val_bpb** (for language modeling), **highest accuracy** (for DNA), or **lowest val_mse** (for time series). The model is deliberately naive; there are many known improvements to discover.
 
-**Memory** is a soft constraint. Some increase is acceptable for meaningful metric gains, but Apple Silicon has unified memory — an OOM crash kills the whole system.
+**Memory** is a soft constraint. Some increase is acceptable for meaningful metric gains, but Apple Silicon has unified memory, and an OOM crash kills the whole system. **Current utilization is very low** (~39MB of 16GB). The default model (d=128, L=4, N=64, 431K params) is a toy. You have headroom to scale significantly: d=512, L=12, N=128 (~15M params, ~2.3GB) fits comfortably. Don't be afraid to try much larger configurations. Scaling + proper initialization (HiPPO) is likely a bigger win than any architectural trick at the current size.
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome.
 
