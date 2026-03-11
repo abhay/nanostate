@@ -91,7 +91,8 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 git clone https://github.com/abhay/nanostate.git
 cd nanostate
 uv sync
-uv run python train.py                  # language modeling (default)
+uv run python train.py                  # byte-level LM on TinyShakespeare (fast, ~80s)
+uv run python train.py --task lm-tok    # BPE token-level LM on FineWebEdu (real benchmark)
 uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
