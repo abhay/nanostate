@@ -139,6 +139,17 @@ uv run python train.py --size large    # d=1024, L=12 |  80.9M params
 
 For lm-tok, the 50K vocab embedding adds significant overhead (e.g. `small` = 42.8M params, `large` = 183M). The `NS_*` env vars override any preset for fine-grained control.
 
+## Block types
+
+Two SSM architectures, same training interface:
+
+```bash
+uv run python train.py --block s4d    # S4D diagonal SSM (default) — FFT convolution, fixed A/B/C
+uv run python train.py --block ssd    # Mamba-2 SSD — chunked matmul, input-dependent A/B/C (selective)
+```
+
+S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. SSD uses the same `--size` presets and all the same tooling (generation, visualization, benchmarks).
+
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
@@ -231,6 +242,7 @@ The papers:
 
 - [Efficiently Modeling Long Sequences with Structured State Spaces](https://arxiv.org/abs/2111.00396) (S4, Gu et al. 2021). The one that started it all.
 - [Mamba: Linear-Time Sequence Modeling with Selective State Spaces](https://arxiv.org/abs/2312.00752) (Gu, Dao 2023). Input-dependent parameters and hardware-aware parallel scan. Mamba-3B matches Transformers at 2x the size.
+- [Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality](https://arxiv.org/abs/2405.21060) (Dao, Gu 2024). Mamba-2. Connects SSMs to attention via structured matrices, replaces selective scan with chunked matmul. Our `--block ssd` implements this.
 - [Albert Gu's PhD thesis](https://purl.stanford.edu/mb976vf9362) (Stanford 2023). The most complete single-document treatment of the whole SSM line of work, from HiPPO through S4 and beyond.
 
 ## Acknowledgements
