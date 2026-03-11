@@ -14,17 +14,17 @@ The tradeoff is real: a fixed-size state can't do arbitrary lookback the way att
 
 ## The idea
 
-Start with the dumbest possible state space model. Diagonal S4D, random init, vanilla Adam, no gating. ~50 lines for the core. You can hold the whole thing in your head.
+Start with a minimal state space model. Diagonal S4D, random init, gated blocks. ~100 lines for the core. You can hold the whole thing in your head.
 
 Then make it better.
 
-**The naive starting point:**
+**The starting point:**
 - Diagonal State Space layers (S4D)
-- Random initialization (no HiPPO)
-- SSM → LayerNorm → MLP → LayerNorm blocks
-- Basic Adam
+- Mamba-style SiLU gated blocks (pre-norm)
+- Cosine LR decay with linear warmup
+- Random initialization (no HiPPO yet)
 
-Right now this runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh. We'll be looking at other architectures soon.
+This runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh.
 
 ## Leaderboard
 
@@ -34,13 +34,15 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 |---|---------|--------|------------|--------|
 | 1 | 2.3249 | 431K | baseline (d=128, L=4, N=64) | `33f65fd` |
 | 2 | 2.3031 | 431K | pre-norm residual blocks | `da90ca7` |
-| 3 | 2.2945 | 2.0M | scale up: d=256, L=6 | `da90ca7` |
-| 4 | **2.2390** | **2.9M** | **wider: d=384, L=4** | `da90ca7` |
+| 3 | 2.2390 | 2.9M | scale to d=384, L=4 | `da90ca7` |
+| 4 | 2.2524 | 4.3M | Mamba-style SiLU gated block | `8ebefd9` |
+| 5 | 2.2225 | 4.3M | lr=5e-4 | `ffc50ee` |
+| 6 | **2.2093** | **4.3M** | **cosine LR decay + warmup** | `7bbf711` |
 
-*Autoresearch in progress. Updated live on the experiment branch.*
+*20 experiments across the first autoresearch run ([details](#all-experiments)).*
 
 <details>
-<summary>All experiments (including discards)</summary>
+<summary><a id="all-experiments"></a>All experiments (including discards)</summary>
 
 | val_bpb | Params | Status | Description | Commit |
 |---------|--------|--------|-------------|--------|
@@ -55,6 +57,15 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 2.2390 | 2.9M | keep | d=384, n_layers=4 | `da90ca7` |
 | 2.2555 | 4.9M | discard | d=512, n_layers=4 (diminishing returns) | `da90ca7` |
 | 2.2718 | 4.2M | discard | d=384, n_layers=6 (underfits at 1000 steps) | `da90ca7` |
+| 2.3776 | 2.9M | discard | 2000 steps (overfits) | `0225b51` |
+| 2.2665 | 2.9M | discard | AdamW weight_decay=0.1 | `5a53028` |
+| 2.2524 | 4.3M | keep | Mamba-style SiLU gated block | `8ebefd9` |
+| 2.3051 | 4.3M | discard | seq_len=512 (overfits, 2x slower) | `8ebefd9` |
+| 2.2225 | 4.3M | keep | lr=5e-4 | `ffc50ee` |
+| 2.2541 | 4.3M | discard | lr=3e-4 (too slow at 1000 steps) | `ffc50ee` |
+| 2.2617 | 4.3M | discard | output proj scaling + grad clip | `15559a0` |
+| 2.2728 | 3.9M | discard | state_dim=16 | `27d609c` |
+| 2.2093 | 4.3M | keep | cosine LR decay + 100-step warmup | `7bbf711` |
 
 </details>
 
@@ -103,7 +114,7 @@ uv run python generate.py checkpoints/lm --temp 0 --tokens 200
 uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
 ```
 
-The inference state is a fixed-size vector (d_model x state_dim x n_layers x 4 bytes). For the default model that's 128KB. Generating the millionth token costs the same as the first.
+The inference state is a fixed-size vector (d_inner x state_dim x n_layers x 4 bytes). For the default model that's 768KB. Generating the millionth token costs the same as the first.
 
 ## State visualization
 
