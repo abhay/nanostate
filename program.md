@@ -124,15 +124,15 @@ LOOP FOREVER:
    - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN) without editing code. `NS_D_MODEL`, `NS_N_LAYERS`, `NS_STATE_DIM` still work and override `--size`. No commit needed.
    - **Code change** (for architectural changes): edit `train.py` and git commit.
    Use your judgment. Model scaling → `--size`. Pure number tuning (lr, batch, seq_len) → env vars. Structural changes (new init, gating, selectivity) → code edit.
-3. Run the experiment: `uv run python train.py --task lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Use `--size` or prepend env vars if sweeping, e.g. `uv run python train.py --task lm --size medium > run.log 2>&1` or `NS_LR=3e-4 uv run python train.py --task lm > run.log 2>&1`.
+3. Run the experiment: `uv run python train.py --task lm --save checkpoints/lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Always use `--save` so the best checkpoint is tracked automatically (saved to `checkpoints/<task>/best/` whenever val_loss improves). Use `--size` or prepend env vars if sweeping, e.g. `uv run python train.py --task lm --size medium --save checkpoints/lm > run.log 2>&1`.
 4. Parse the results: `grep -A1 METRICS run.log | head -1` gives a JSON blob with all metrics.
 5. If the output is empty or shows an error, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix.
 6. Record the results in results.tsv. For env var sweeps, note the env vars in the description column.
 7. If the primary metric improved (lower val_bpb, higher accuracy, lower val_mse):
    - **Code change**: keep the commit, advance the branch.
    - **Env var sweep**: commit the winning values as new defaults in `train.py`, then advance.
-   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`). Save a checkpoint with `--save checkpoints/<task>_best` (e.g. `checkpoints/lm_best` or `checkpoints/lm_tok_best`). For lm, generate a text sample (`uv run python generate.py checkpoints/lm_best --prompt "ROMEO: " --tokens 200 --temp 0.8 2>&1 | head -20`). For lm-tok, generate with a different prompt (`--prompt "The meaning of life"`). Append the sample to the results log or commit message. Commit results.tsv + reports/, and push to the remote branch.
-   - **Benchmark** (optional, for milestone improvements): Run `uv run python eval.py checkpoints/<task>_best --benchmark hellaswag` to get a standardized HellaSwag score. Log it in the commit message. This only makes sense for lm-tok checkpoints trained for 3K+ steps.
+   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`). The best checkpoint was already saved during training (at `checkpoints/<task>/best/`). For lm, generate a text sample (`uv run python generate.py checkpoints/lm/best --prompt "ROMEO: " --tokens 200 --temp 0.8 2>&1 | head -20`). For lm-tok, generate with a different prompt (`--prompt "The meaning of life"`). Append the sample to the results log or commit message. Commit results.tsv + reports/, and push to the remote branch.
+   - **Benchmark** (optional, for milestone improvements): Run `uv run python eval.py checkpoints/lm_tok/best --benchmark hellaswag` to get a standardized HellaSwag score. Log it in the commit message. This only makes sense for lm-tok checkpoints trained for 3K+ steps.
 8. If the metric is equal or worse:
    - **Code change**: git reset back to where you started.
    - **Env var sweep**: nothing to undo, just move on.

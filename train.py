@@ -358,7 +358,24 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["step", "train_loss", "val_loss"] + extra_cols + ["step_ms", "total_s"])
 
+    # --- checkpoint helper ---
+    def save_checkpoint(path):
+        os.makedirs(path, exist_ok=True)
+        config = {
+            "task": task,
+            "d_model": D_MODEL,
+            "n_layers": N_LAYERS,
+            "state_dim": STATE_DIM,
+            "mlp_ratio": MLP_RATIO,
+        }
+        if task == "lm-tok":
+            config["vocab_size"] = vocab_size
+        model.save_weights(os.path.join(path, "model.npz"))
+        with open(os.path.join(path, "config.json"), "w") as f:
+            json.dump(config, f, indent=2)
+
     # --- train ---
+    best_val_loss = float("inf")
     t0 = time.time()
     for step in range(max_steps):
         ts = time.time()
@@ -403,6 +420,13 @@ def main():
                 row = [step, f"{tl:.4f}", f"{vl:.4f}"] + extra + [f"{step_ms:.0f}", f"{total_s:.1f}"]
                 writer.writerow(row)
 
+            # Save best checkpoint
+            if args.save and vl < best_val_loss:
+                best_val_loss = vl
+                best_path = os.path.join(args.save, "best")
+                save_checkpoint(best_path)
+                print(f"  → new best val_loss={vl:.4f}, saved to {best_path}")
+
     # --- metrics summary (machine-readable) ---
     total_s = time.time() - t0
     summary = {"task": task, "params": n_params, "steps": max_steps, "d_model": D_MODEL, "n_layers": N_LAYERS, "state_dim": STATE_DIM}
@@ -418,22 +442,12 @@ def main():
         summary["val_mse"] = round(metrics["val_mse"], 4)
         summary["val_mae"] = round(metrics["val_mae"], 4)
 
-    # --- checkpoint ---
+    # --- checkpoint (final) ---
     if args.save:
-        os.makedirs(args.save, exist_ok=True)
-        config = {
-            "task": task,
-            "d_model": D_MODEL,
-            "n_layers": N_LAYERS,
-            "state_dim": STATE_DIM,
-            "mlp_ratio": MLP_RATIO,
-        }
-        if task == "lm-tok":
-            config["vocab_size"] = vocab_size
-        model.save_weights(os.path.join(args.save, "model.npz"))
-        with open(os.path.join(args.save, "config.json"), "w") as f:
-            json.dump(config, f, indent=2)
+        save_checkpoint(args.save)
         print(f"Saved checkpoint to {args.save}")
+        if best_val_loss < float("inf"):
+            print(f"Best checkpoint (val_loss={best_val_loss:.4f}) at {args.save}/best")
 
     print(f"\nDone. Log: {log_file}")
     print("---METRICS---")

@@ -144,11 +144,11 @@ For lm-tok, the 50K vocab embedding adds significant overhead (e.g. `small` = 42
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
 
 ```bash
-# Train and save a checkpoint
+# Train and save a checkpoint (best model auto-saved to checkpoints/lm/best/)
 uv run python train.py --task lm --save checkpoints/lm
 
-# Generate text
-uv run python generate.py checkpoints/lm --prompt "ROMEO: " --tokens 500
+# Generate from the best checkpoint
+uv run python generate.py checkpoints/lm/best --prompt "ROMEO: " --tokens 500
 
 # Greedy decoding
 uv run python generate.py checkpoints/lm --temp 0 --tokens 200
