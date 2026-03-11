@@ -8,6 +8,12 @@ Usage:
   python train.py --task lm-tok   # BPE token-level language modeling (FineWebEdu)
   python train.py --task dna      # DNA sequence classification
   python train.py --task ts       # time series forecasting (ETT)
+
+Model sizes (byte-level LM params):
+  python train.py --size tiny     # d=128, L=4   (~662K params)
+  python train.py --size small    # d=384, L=4   (~4.3M params, default)
+  python train.py --size medium   # d=768, L=6   (~23M params)
+  python train.py --size large    # d=1024, L=12 (~81M params)
 """
 
 import argparse
@@ -36,10 +42,19 @@ from data import (
 # Config
 # ---------------------------------------------------------------------------
 
-# model (override via NS_* env vars for sweeps)
-D_MODEL = int(os.environ.get("NS_D_MODEL", 384))
-N_LAYERS = int(os.environ.get("NS_N_LAYERS", 4))
-STATE_DIM = int(os.environ.get("NS_STATE_DIM", 64))
+# Size presets: one knob to scale the model.
+# Use --size {tiny,small,medium,large}. NS_* env vars override any preset.
+SIZE_PRESETS = {
+    "tiny": {"d_model": 128, "n_layers": 4, "state_dim": 64},
+    "small": {"d_model": 384, "n_layers": 4, "state_dim": 64},
+    "medium": {"d_model": 768, "n_layers": 6, "state_dim": 64},
+    "large": {"d_model": 1024, "n_layers": 12, "state_dim": 64},
+}
+
+# model defaults (resolved in main() with --size and NS_* env vars)
+D_MODEL = 384
+N_LAYERS = 4
+STATE_DIM = 64
 MLP_RATIO = 2
 
 # training
@@ -265,11 +280,24 @@ def count_params(model):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
+    parser.add_argument("--size", choices=list(SIZE_PRESETS), default=None, help="Model size preset (overridden by NS_* env vars)")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
     args = parser.parse_args()
+
+    # Resolve model dimensions: defaults < --size < NS_* env vars
+    global D_MODEL, N_LAYERS, STATE_DIM
+    if args.size:
+        p = SIZE_PRESETS[args.size]
+        D_MODEL, N_LAYERS, STATE_DIM = p["d_model"], p["n_layers"], p["state_dim"]
+    if "NS_D_MODEL" in os.environ:
+        D_MODEL = int(os.environ["NS_D_MODEL"])
+    if "NS_N_LAYERS" in os.environ:
+        N_LAYERS = int(os.environ["NS_N_LAYERS"])
+    if "NS_STATE_DIM" in os.environ:
+        STATE_DIM = int(os.environ["NS_STATE_DIM"])
 
     batch_size = args.batch
     task = args.task
