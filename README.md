@@ -97,6 +97,12 @@ uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
 
+Or reproduce the current best result in one shot:
+
+```bash
+bash runs/speedrun.sh    # ~2.19 val_bpb in 84s on M1 Max
+```
+
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
