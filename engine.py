@@ -47,6 +47,9 @@ class RecurrentState:
     Pre-computes the discretized SSM parameters (A_d, B_d) once at init,
     then runs the recurrent update: state = A_d * state + B_d * input
     for each token.
+
+    Supports both the old SSMBlock (SSM+MLP with norm1/norm2) and the
+    Mamba-style gated block (norm → in_proj → SSM + gate → out_proj).
     """
 
     def __init__(self, model):
@@ -57,14 +60,20 @@ class RecurrentState:
         self.states = []
         for block in model.blocks:
             ssm = block.ssm
-            dt = mx.exp(ssm.log_dt)  # (H,)
-            A = -mx.exp(ssm.log_A)  # (H, N)
-            A_d = mx.exp(A * dt[:, None])  # (H, N) discrete A
-            B_d = ssm.B * dt[:, None]  # (H, N) discrete B
+            dt = mx.exp(ssm.log_dt)  # (d_inner,) or (d_model,)
+            A = -mx.exp(ssm.log_A)  # (d_inner, N) or (d_model, N)
+            A_d = mx.exp(A * dt[:, None])  # discrete A
+            B_d = ssm.B * dt[:, None]  # discrete B
             self._layers.append((A_d, B_d, ssm.C, ssm.D))
             self.states.append(mx.zeros_like(A_d))
 
         mx.eval(self.states)
+
+        # Detect block type: gated (Mamba-style) vs classic (SSM+MLP)
+        self._gated = hasattr(model.blocks[0], 'in_proj')
+
+    def _silu(self, x):
+        return x * mx.sigmoid(x)
 
     def step(self, token):
         """Feed one token, return logits.
@@ -77,13 +86,27 @@ class RecurrentState:
         for i, block in enumerate(self.model.blocks):
             A_d, B_d, C, D = self._layers[i]
 
-            # Recurrent SSM step: state = A_d * state + B_d * u
-            self.states[i] = A_d * self.states[i] + B_d * x[:, None]
-            ssm_out = mx.sum(C * self.states[i], axis=1) + D * x
+            if self._gated:
+                # Mamba-style gated block: norm → in_proj → SSM + gate → out_proj
+                residual = x
+                x_norm = block.norm(x)
+                xz = block.in_proj(x_norm)
+                d_inner = xz.shape[0] // 2
+                x_ssm, z = xz[:d_inner], xz[d_inner:]
 
-            # Residual + norms + MLP (mirrors SSMBlock.__call__)
-            x = block.norm1(x + ssm_out)
-            x = block.norm2(x + block.mlp(x))
+                # Recurrent SSM step on expanded dimension
+                self.states[i] = A_d * self.states[i] + B_d * x_ssm[:, None]
+                ssm_out = mx.sum(C * self.states[i], axis=1) + D * x_ssm
+
+                # Gating and project back
+                y = ssm_out * self._silu(z)
+                x = residual + block.out_proj(y)
+            else:
+                # Classic SSMBlock: SSM → norm1 → MLP → norm2
+                self.states[i] = A_d * self.states[i] + B_d * x[:, None]
+                ssm_out = mx.sum(C * self.states[i], axis=1) + D * x
+                x = block.norm1(x + ssm_out)
+                x = block.norm2(x + block.mlp(x))
 
         x = self.model.norm(x)
         logits = self.model.head(x)
