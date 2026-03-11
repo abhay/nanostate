@@ -2,7 +2,7 @@
 # Speedrun: reproduce the current best nanostate result.
 #
 # Byte-level TinyShakespeare, M1 Max, ~80 seconds.
-# Target: 2.18 val_bpb (HiPPO-LegS init, gated blocks, cosine LR)
+# Target: 2.17 val_bpb (HiPPO-LegS init, gated blocks, cosine LR, lr=7e-4)
 #
 # Usage:
 #   bash runs/speedrun.sh              # train + eval
@@ -13,7 +13,7 @@ CHECKPOINT="checkpoints/speedrun"
 
 if [[ "${1:-}" != "--eval-only" ]]; then
     echo "=== Speedrun: byte-level TinyShakespeare ==="
-    echo "Target: ~2.18 val_bpb | d=384, L=4, N=64 | ~4.3M params"
+    echo "Target: ~2.17 val_bpb | d=384, L=4, N=64 | ~4.3M params"
     echo ""
 
     # Warmup (compiles kernels, doesn't count toward time)
@@ -23,7 +23,7 @@ if [[ "${1:-}" != "--eval-only" ]]; then
     uv run python train.py \
         --task lm \
         --steps 1000 \
-        --lr 5e-4 \
+        --lr 7e-4 \
         --batch 32 \
         --save "$CHECKPOINT"
 

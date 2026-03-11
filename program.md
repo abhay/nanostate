@@ -45,7 +45,9 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
 - `--task lm-tok`: BPE token-level FineWebEdu (GPT-2 tokenizer, 50K vocab). Slower but avoids overfitting. This is the real benchmark.
 
-**Focus on one task at a time.** Start with `--task lm` for fast iteration, then validate wins on `--task lm-tok`. Switch tasks only if the user asks.
+**Experiment strategy:** Use `--task lm` (fast, ~80ms/step) as a quick proxy to test architectural ideas. Then validate winners on `--task lm-tok` with longer runs. However, some ideas that fail on lm (due to overfitting TinyShakespeare's 1MB) may work on lm-tok (10B tokens, no overfitting). If something fails on lm because of overfitting (train loss much lower than val loss), retry it on lm-tok before discarding.
+
+**Invest in longer lm-tok runs.** At 1000 steps the model only sees ~8M tokens out of 10B available. It is massively undertrained. Don't treat 1000-step lm-tok results as definitive. Scale to 3K, 5K, 10K+ steps to let the model actually learn. More steps is the single easiest lever on lm-tok.
 
 **What you CAN do:**
 - Modify `train.py`: the only file you edit. Everything is fair game: model architecture, SSM parameterization, optimizer, hyperparameters, training loop, initialization, gating, discretization, hybrid layers, etc.
@@ -56,7 +58,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **The goal is simple: get the lowest val_bpb** (for language modeling), **highest accuracy** (for DNA), or **lowest val_mse** (for time series). The model is deliberately naive; there are many known improvements to discover.
 
-**Memory** is a soft constraint. Some increase is acceptable for meaningful metric gains, but Apple Silicon has unified memory, and an OOM crash kills the whole system. **Current utilization is very low** (~39MB of 16GB). The default model (d=128, L=4, N=64, 431K params) is a toy. You have headroom to scale significantly: d=512, L=12, N=128 (~15M params, ~2.3GB) fits comfortably. Don't be afraid to try much larger configurations. Scaling + proper initialization (HiPPO) is likely a bigger win than any architectural trick at the current size.
+**Memory** is a soft constraint. Apple Silicon has unified memory (16GB), and an OOM crash kills the whole system. The current model (d=384, L=4, N=64) uses ~42.8M params for lm-tok (mostly the 50K vocab embed+head). You still have headroom — d=512, L=8, N=128 should fit. For lm-tok, note that scaling d_model increases the embed/head tables linearly (50257×d_model each).
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome.
 
@@ -124,7 +126,8 @@ LOOP FOREVER:
 7. If the primary metric improved (lower val_bpb, higher accuracy, lower val_mse):
    - **Code change**: keep the commit, advance the branch.
    - **Env var sweep**: commit the winning values as new defaults in `train.py`, then advance.
-   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`). If this is the LM task, also save a checkpoint (`--save checkpoints/lm_best`) and generate a text sample (`uv run python generate.py checkpoints/lm_best --prompt "ROMEO: " --tokens 200 --temp 0.8 2>&1 | head -20`). Append the sample to the results log or commit message so there's a qualitative record. Commit results.tsv + reports/, and push to the remote branch. This keeps the remote in sync and prevents losing work if the agent crashes.
+   - **Checkpoint**: regenerate the dashboard (`uv run python progress.py --html-only`). Save a checkpoint with `--save checkpoints/<task>_best` (e.g. `checkpoints/lm_best` or `checkpoints/lm_tok_best`). For lm, generate a text sample (`uv run python generate.py checkpoints/lm_best --prompt "ROMEO: " --tokens 200 --temp 0.8 2>&1 | head -20`). For lm-tok, generate with a different prompt (`--prompt "The meaning of life"`). Append the sample to the results log or commit message. Commit results.tsv + reports/, and push to the remote branch.
+   - **Benchmark** (optional, for milestone improvements): Run `uv run python eval.py checkpoints/<task>_best --benchmark hellaswag` to get a standardized HellaSwag score. Log it in the commit message. This only makes sense for lm-tok checkpoints trained for 3K+ steps.
 8. If the metric is equal or worse:
    - **Code change**: git reset back to where you started.
    - **Env var sweep**: nothing to undo, just move on.
@@ -132,7 +135,7 @@ LOOP FOREVER:
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
-**Timeout**: Each experiment should finish in under 2 minutes (1000 steps at ~20ms/step). If a run exceeds 5 minutes, kill it and treat it as a failure.
+**Timeout**: For `lm`, each experiment should finish in under 2 minutes (1000 steps at ~80ms/step). For `lm-tok`, expect ~475ms/step at 1000 steps (~8 min) or longer for multi-thousand step runs. If a run exceeds 3x the expected time, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
@@ -140,35 +143,40 @@ LOOP FOREVER:
 
 ## SSM-specific guidance
 
-The starting model is a naive diagonal S4D. It's deliberately missing many known improvements. Here are directions to explore (roughly in order of expected impact):
+The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. These are all done. Here's what's left to explore, roughly in order of expected impact:
 
-**Initialization:**
-- HiPPO initialization for the A matrix (the single most important S4 insight). The current A is random. HiPPO gives it structure that captures long-range dependencies. See "The Annotated S4" for the math.
-- Proper B, C initialization (often tied to HiPPO).
-
-**Selectivity (the Mamba insight):**
-- Make B, C, dt input-dependent (functions of the input, not fixed parameters). This is what makes Mamba work: the model can selectively remember or forget based on content.
+**Selectivity (the Mamba insight) — #1 priority, never tried:**
+- Make B, C, dt input-dependent (functions of the input via linear projections, not fixed parameters). This is what makes Mamba work: the model can selectively remember or forget based on content.
 - This changes the model from a fixed linear system to a data-dependent one.
+- WARNING: selective SSMs cannot use FFT convolution. You must replace the convolutional path with either a sequential scan or a parallel scan. A simple sequential scan (`for t in range(L): ...`) works but is slow. A parallel scan is faster but more complex to implement. Start with the sequential scan to prove the idea works, optimize later.
+- **Evidence this matters:** On lm-tok, L=4 and L=6 converge to the exact same val_bpb (~7.47). This is NOT a capacity limit — it's an LTI (Linear Time-Invariant) inductive bias limit. The fixed B, C, dt mean the model applies one convolution kernel to all inputs. Selectivity breaks this ceiling.
+- Start with: reduced state_dim=16 (Mamba uses N=16), seq_len=128, to manage speed with Python for loop. Prove quality improves first, optimize later.
 
-**Gating:**
-- Add gating mechanisms (multiplicative interactions). Mamba uses an expand-and-gate pattern similar to GLU.
-- SiLU/Swish activations in the gating path.
+**Quick wins to try on lm-tok:**
+- **C init scale**: Currently 0.01 × randn — very small. Try 0.1 or 1.0 so the SSM output has more influence early in training.
+- **Softplus for dt** instead of exp: Mamba uses softplus(linear(x)). Different gradient profile — clips dt gradients to [0,1], potentially more stable.
+- **RMSNorm** instead of LayerNorm: Mamba-2 uses RMSNorm. Simpler (no mean subtraction), slightly faster.
+- **Conv1d before SSM on lm-tok**: Failed on lm (overfitting), but lm-tok has 10,000x more data. Worth retrying.
+- **seq_len=512 or 1024 on lm-tok**: Hurt on lm (overfitting), but lm-tok doesn't overfit. Longer sequences let the SSM use its long-range memory advantage.
 
 **Architecture:**
-- Pre-norm vs post-norm (current is post-norm).
-- Different MLP designs (GLU, SwiGLU).
-- Residual connection placement.
-- Hybrid: mix SSM layers with attention layers.
+- Hybrid: mix SSM layers with 1-2 attention layers. Active research area (Jamba, Zamba).
+- Different MLP designs (SwiGLU).
 
 **Discretization:**
 - ZOH (zero-order hold) vs bilinear vs Euler discretization.
 - The current implementation uses a simple exponential discretization.
 
+**Speed & precision:**
+- Mixed precision (float16) training. MLX supports `mx.float16` natively. The big win is on lm-tok where the 50K vocab head projection dominates step time. Use `model.astype(mx.float16)` or cast specific layers. Keep optimizer state in float32 to avoid instability.
+- mx.compile for speed — wraps the forward/backward in a compiled graph.
+- Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Optimizing the SSM won't help if the vocab projection is the bottleneck.
+
 **Optimizer & training:**
-- Learning rate scheduling (warmup, cosine decay).
-- Weight decay.
-- Gradient clipping.
-- mx.compile for speed.
+- Learning rate warmup ratio: current warmup is min(100, steps/10). For longer runs (5K+), the warmup ratio matters — experiment with 1-5% warmup.
+- Cosine decay min LR: currently decays to 1e-5. For longer runs, the final LR matters more.
+- Gradient accumulation: simulate larger effective batch size without more memory. Accumulate gradients over N steps before updating.
+- Weight decay may help on lm-tok (it hurt on lm where the model was overfitting TinyShakespeare, but lm-tok is in an underfitting regime).
 - Larger/smaller models, different layer counts.
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.
