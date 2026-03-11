@@ -146,6 +146,32 @@ uv run python generate.py checkpoints/lm --temp 0.7 --top-k 20 --tokens 1000
 
 The inference state is a fixed-size vector (d_inner x state_dim x n_layers x 4 bytes). For the default model that's 768KB. Generating the millionth token costs the same as the first.
 
+## Inference benchmark
+
+Measure tokens/sec at different context depths to prove the SSM advantage: constant cost per token.
+
+```bash
+uv run python benchmark.py checkpoints/lm
+```
+
+```
+After      0 tokens of context: 1,071 tok/s
+After  1,000 tokens of context: 1,133 tok/s
+After 10,000 tokens of context: 1,118 tok/s
+```
+
+A transformer's KV cache would use ~117 MB at 10K tokens. The SSM state is always 768 KB.
+
+## Infinite context
+
+Stream an entire book through the model with constant memory. Then generate a continuation from the final state.
+
+```bash
+uv run python infinite_context.py checkpoints/lm --file data/shakespeare.txt --generate 200
+```
+
+The state vector never grows — processing token 1,000,000 costs the same as token 1.
+
 ## Evaluation
 
 Evaluate a checkpoint on its validation set or run standardized benchmarks. Prints results as JSON.
