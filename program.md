@@ -177,6 +177,7 @@ Every 10 experiments (or when you feel stuck), pause the loop and do housekeepin
 2. **Run summary**: Run `uv run python progress.py --summary <tag>` to generate `reports/runs/<tag>.md`.
 3. **Dashboard**: Run `uv run python progress.py --html-only` to regenerate `reports/index.html` + `reports/results.json`.
 4. **Commit and push**: Commit results.tsv, reports/, and knowledge/ to the experiment branch. Push.
+5. **Compact context**: Run `/compact` to free up context window space. The checkpoint steps above preserve all state to disk, so nothing is lost. This lets you run many more experiments before hitting the context limit.
 
 This ensures that if the session ends (context limit, crash, human interrupt), the work is preserved and the next session can pick up where you left off.
 
