@@ -62,12 +62,19 @@ class S4DLayer(nn.Module):
 
     def __init__(self, d_model: int, state_dim: int):
         super().__init__()
-        # A: real diagonal, negative for stability. parameterized as -exp(log_A)
-        self.log_A = mx.random.uniform(low=-4.0, high=-1.0, shape=(d_model, state_dim))
-        self.B = mx.random.normal((d_model, state_dim)) * 0.01
+        # A: HiPPO-LegS diagonal. Eigenvalues -(n + 0.5) for n=0..N-1
+        # give a logarithmic spread of decay rates from slow to fast.
+        hippo_spacing = mx.arange(1, state_dim + 1, dtype=mx.float32) - 0.5
+        self.log_A = mx.broadcast_to(mx.log(hippo_spacing)[None, :], (d_model, state_dim))
+        # B: HiPPO-LegS projection weights
+        self.B = mx.broadcast_to(
+            mx.sqrt(2 * mx.arange(state_dim, dtype=mx.float32) + 1)[None, :],
+            (d_model, state_dim),
+        )
         self.C = mx.random.normal((d_model, state_dim)) * 0.01
         self.D = mx.ones((d_model,))
-        self.log_dt = mx.zeros((d_model,))  # learnable step size
+        # dt: step size matched to HiPPO eigenvalue range [0.008, 0.03]
+        self.log_dt = mx.random.uniform(low=-4.83, high=-3.51, shape=(d_model,))
 
     def kernel(self, L: int):
         """Compute SSM convolution kernel of length L."""
