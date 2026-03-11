@@ -151,9 +151,9 @@ class NanoSSM(nn.Module):
         self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
 
-        # task head
+        # task head (LM uses weight tying with embedding)
         if task == "lm":
-            self.head = nn.Linear(D_MODEL, 256)
+            pass  # reuse embed.weight as head
         elif task == "dna":
             self.head = nn.Linear(D_MODEL, n_classes)
         elif task == "ts":
@@ -167,7 +167,7 @@ class NanoSSM(nn.Module):
         x = self.norm(x)
 
         if self.task == "lm":
-            return self.head(x)  # (B, L, vocab)
+            return x @ self.embed.weight.T  # weight-tied head
         elif self.task == "dna":
             x = mx.mean(x, axis=1)  # (B, H) mean pool
             return self.head(x)  # (B, n_classes)
