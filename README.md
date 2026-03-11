@@ -22,7 +22,7 @@ Then make it better.
 - Diagonal State Space layers (S4D)
 - Mamba-style SiLU gated blocks (pre-norm)
 - Cosine LR decay with linear warmup
-- Random initialization (no HiPPO yet)
+- HiPPO-LegS initialization (principled A matrix + matched dt range)
 
 This runs on an M1 Max. Basically a potato by modern ML standards. That's the whole compute budget, and part of the appeal: SSMs let you train something meaningful on hardware that would make a GPU cluster laugh.
 
