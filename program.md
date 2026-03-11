@@ -47,7 +47,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **Experiment strategy:** Use `--task lm` (fast, ~80ms/step) as a quick proxy to test architectural ideas. Then validate winners on `--task lm-tok` with longer runs. However, some ideas that fail on lm (due to overfitting TinyShakespeare's 1MB) may work on lm-tok (10B tokens, no overfitting). If something fails on lm because of overfitting (train loss much lower than val loss), retry it on lm-tok before discarding.
 
-**Invest in longer lm-tok runs.** At 1000 steps the model only sees ~8M tokens out of 10B available. It is massively undertrained. Don't treat 1000-step lm-tok results as definitive. Scale to 3K, 5K, 10K+ steps to let the model actually learn. More steps is the single easiest lever on lm-tok.
+**Use 1000-step lm-tok runs for quick iteration** (~8 min). This is enough to compare ideas — if something doesn't beat the baseline at 1000 steps, it won't at 3000. Only do 3000+ step runs to validate winners. **While long runs are in the background, keep working** — plan the next experiment, write code, review results. Don't sit idle waiting.
 
 **What you CAN do:**
 - Modify `train.py`: the only file you edit. Everything is fair game: model architecture, SSM parameterization, optimizer, hyperparameters, training loop, initialization, gating, discretization, hybrid layers, etc.
@@ -135,7 +135,7 @@ LOOP FOREVER:
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
-**Timeout**: For `lm`, each experiment should finish in under 2 minutes (1000 steps at ~80ms/step). For `lm-tok`, expect ~475ms/step at 1000 steps (~8 min) or longer for multi-thousand step runs. If a run exceeds 3x the expected time, kill it and treat it as a failure.
+**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok`, expect ~500ms/step — so 1000 steps ≈ 10 min, 3000 steps ≈ 30 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
