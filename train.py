@@ -5,6 +5,7 @@ This is the file you iterate on.
 
 Usage:
   python train.py --task lm       # byte-level language modeling (TinyShakespeare)
+  python train.py --task lm-tok   # BPE token-level language modeling (FineWebEdu)
   python train.py --task dna      # DNA sequence classification
   python train.py --task ts       # time series forecasting (ETT)
 """
@@ -24,8 +25,10 @@ from data import (
     get_batch_dna,
     get_batch_lm,
     get_batch_ts,
+    get_fineweb_vocab_size,
     load_dna,
     load_ett,
+    load_fineweb,
     load_shakespeare,
 )
 
@@ -142,13 +145,13 @@ class SSMBlock(nn.Module):
 
 
 class NanoSSM(nn.Module):
-    def __init__(self, task: str, n_classes: int = 2, n_features: int = 7, pred_len: int = 96):
+    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96):
         super().__init__()
         self.task = task
 
         # embedding
-        if task == "lm":
-            self.embed = nn.Embedding(256, D_MODEL)
+        if task in ("lm", "lm-tok"):
+            self.embed = nn.Embedding(vocab_size, D_MODEL)
         elif task == "dna":
             self.embed = nn.Embedding(5, D_MODEL)  # A C G T N
         elif task == "ts":
@@ -159,8 +162,8 @@ class NanoSSM(nn.Module):
         self.norm = nn.LayerNorm(D_MODEL)
 
         # task head
-        if task == "lm":
-            self.head = nn.Linear(D_MODEL, 256)
+        if task in ("lm", "lm-tok"):
+            self.head = nn.Linear(D_MODEL, vocab_size)
         elif task == "dna":
             self.head = nn.Linear(D_MODEL, n_classes)
         elif task == "ts":
@@ -173,7 +176,7 @@ class NanoSSM(nn.Module):
             x = block(x)
         x = self.norm(x)
 
-        if self.task == "lm":
+        if self.task in ("lm", "lm-tok"):
             return self.head(x)  # (B, L, vocab)
         elif self.task == "dna":
             x = mx.mean(x, axis=1)  # (B, H) mean pool
@@ -203,7 +206,7 @@ def loss_ts(model, x, y):
     return mx.mean((pred - y) ** 2)
 
 
-LOSS_FN = {"lm": loss_lm, "dna": loss_dna, "ts": loss_ts}
+LOSS_FN = {"lm": loss_lm, "lm-tok": loss_lm, "dna": loss_dna, "ts": loss_ts}
 
 # ---------------------------------------------------------------------------
 # Evaluation
@@ -261,7 +264,7 @@ def count_params(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["lm", "dna", "ts"], default="lm")
+    parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
     parser.add_argument("--steps", type=int, default=MAX_STEPS)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
@@ -278,6 +281,11 @@ def main():
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
         model = NanoSSM("lm")
+    elif task == "lm-tok":
+        train_data = load_fineweb("train")
+        val_data = load_fineweb("val")
+        vocab_size = get_fineweb_vocab_size()
+        model = NanoSSM("lm-tok", vocab_size=vocab_size)
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
@@ -311,7 +319,7 @@ def main():
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     log_file = os.path.join("logs", f"{task}_{timestamp}.csv")
 
-    if task == "lm":
+    if task in ("lm", "lm-tok"):
         extra_cols = ["val_bpb"]
     elif task == "dna":
         extra_cols = ["accuracy"]
@@ -327,7 +335,7 @@ def main():
     for step in range(max_steps):
         ts = time.time()
 
-        if task == "lm":
+        if task in ("lm", "lm-tok"):
             xnp, ynp = get_batch_lm(train_data, batch_size, SEQ_LEN)
             x, y = mx.array(xnp), mx.array(ynp)
         elif task == "dna":
@@ -344,7 +352,7 @@ def main():
         step_ms = (time.time() - ts) * 1000
 
         if step % EVAL_INTERVAL == 0 or step == max_steps - 1:
-            if task == "lm":
+            if task in ("lm", "lm-tok"):
                 metrics = evaluate_lm(model, val_data, batch_size, EVAL_STEPS)
                 extra = [f"{metrics['val_bpb']:.4f}"]
                 status = f"bpb {metrics['val_bpb']:.4f}"
@@ -374,7 +382,7 @@ def main():
     summary["val_loss"] = round(metrics["val_loss"], 4)
     summary["step_ms"] = round(step_ms, 1)
     summary["total_seconds"] = round(total_s, 1)
-    if task == "lm":
+    if task in ("lm", "lm-tok"):
         summary["val_bpb"] = round(metrics["val_bpb"], 4)
     elif task == "dna":
         summary["accuracy"] = round(metrics["accuracy"], 4)
@@ -392,6 +400,8 @@ def main():
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
         }
+        if task == "lm-tok":
+            config["vocab_size"] = vocab_size
         model.save_weights(os.path.join(args.save, "model.npz"))
         with open(os.path.join(args.save, "config.json"), "w") as f:
             json.dump(config, f, indent=2)

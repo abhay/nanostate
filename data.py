@@ -1,9 +1,10 @@
 """Dataset download and loading for nanostate.
 
-3 datasets:
-  lm  - TinyShakespeare, byte-level language modeling
-  dna - Nucleotide Transformer downstream tasks, sequence classification
-  ts  - ETT (Electricity Transformer Temperature), multivariate forecasting
+4 datasets:
+  lm     - TinyShakespeare, byte-level language modeling
+  lm-tok - FineWebEdu, BPE token-level language modeling (GPT-2 tokenizer)
+  dna    - Nucleotide Transformer downstream tasks, sequence classification
+  ts     - ETT (Electricity Transformer Temperature), multivariate forecasting
 
 This file is fixed infrastructure. Iterate on train.py, not this.
 """
@@ -51,6 +52,60 @@ def get_batch_lm(data, batch_size, seq_len):
     x = np.stack([data[i : i + seq_len] for i in ix]).astype(np.int32)
     y = np.stack([data[i + 1 : i + seq_len + 1] for i in ix]).astype(np.int32)
     return x, y
+
+
+# ---------------------------------------------------------------------------
+# FineWebEdu (BPE token-level language modeling)
+# ---------------------------------------------------------------------------
+
+FINEWEB_DATASET = "HuggingFaceFW/FineWeb-Edu"
+FINEWEB_SUBSET = "sample-10BT"
+FINEWEB_TOKENS = 10_000_000  # ~10M tokens for train, ~1M for val
+
+
+def download_fineweb():
+    """Download FineWebEdu and tokenize with GPT-2 BPE."""
+    cache = os.path.join(DATA_DIR, "fineweb")
+    train_path = os.path.join(cache, "train.npy")
+    val_path = os.path.join(cache, "val.npy")
+    if os.path.exists(train_path) and os.path.exists(val_path):
+        return
+    os.makedirs(cache, exist_ok=True)
+
+    import tiktoken
+    from datasets import load_dataset
+
+    enc = tiktoken.get_encoding("gpt2")
+    print(f"Downloading FineWebEdu ({FINEWEB_SUBSET})...")
+    ds = load_dataset(FINEWEB_DATASET, FINEWEB_SUBSET, split="train", streaming=True)
+
+    tokens = []
+    target = FINEWEB_TOKENS + FINEWEB_TOKENS // 10  # train + val
+    for row in ds:
+        tokens.extend(enc.encode_ordinary(row["text"]))
+        if len(tokens) >= target:
+            break
+
+    tokens = np.array(tokens[:target], dtype=np.int32)
+    split = FINEWEB_TOKENS
+    np.save(train_path, tokens[:split])
+    np.save(val_path, tokens[split:])
+    np.save(os.path.join(cache, "meta.npy"), np.array([enc.n_vocab]))
+    print(f"FineWebEdu: {split:,} train tokens, {len(tokens) - split:,} val tokens, vocab={enc.n_vocab}")
+
+
+def load_fineweb(split):
+    path = os.path.join(DATA_DIR, "fineweb", f"{split}.npy")
+    if not os.path.exists(path):
+        download_fineweb()
+    return np.load(path)
+
+
+def get_fineweb_vocab_size():
+    meta_path = os.path.join(DATA_DIR, "fineweb", "meta.npy")
+    if not os.path.exists(meta_path):
+        download_fineweb()
+    return int(np.load(meta_path)[0])
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +246,7 @@ def prepare_all():
     """Download and prep all datasets."""
     print("=== Preparing datasets ===")
     download_shakespeare()
+    download_fineweb()
     download_dna()
     download_ett()
     print("=== Done ===")

@@ -39,9 +39,13 @@ To set up a new experiment run:
 
 ## Experimentation
 
-Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task dna` or `--task ts`).
+Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task lm-tok` or `--task dna` or `--task ts`).
 
-**Focus on one task at a time.** Start with `--task lm` (language modeling). It's the fastest feedback loop and most comparable to nanochat/autoresearch. Switch tasks only if the user asks.
+**Two language modeling modes:**
+- `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
+- `--task lm-tok`: BPE token-level FineWebEdu (GPT-2 tokenizer, 50K vocab). Slower but avoids overfitting. This is the real benchmark.
+
+**Focus on one task at a time.** Start with `--task lm` for fast iteration, then validate wins on `--task lm-tok`. Switch tasks only if the user asks.
 
 **What you CAN do:**
 - Modify `train.py`: the only file you edit. Everything is fair game: model architecture, SSM parameterization, optimizer, hyperparameters, training loop, initialization, gating, discretization, hybrid layers, etc.
@@ -86,8 +90,8 @@ commit	task	val_metric	params	status	description
 ```
 
 1. git commit hash (short, 7 chars)
-2. task: `lm`, `dna`, or `ts`
-3. primary metric: val_bpb (lm), accuracy (dna), or val_mse (ts)
+2. task: `lm`, `lm-tok`, `dna`, or `ts`
+3. primary metric: val_bpb (lm/lm-tok), accuracy (dna), or val_mse (ts)
 4. parameter count (e.g. 431000)
 5. status: `keep`, `discard`, or `crash`
 6. short text description of what this experiment tried
