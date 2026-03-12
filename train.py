@@ -21,6 +21,7 @@ import csv
 import json
 import os
 import time
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -334,6 +335,15 @@ def main():
 
     # materialize parameters
     mx.eval(model.parameters())
+
+    # Optional mixed precision (NS_DTYPE=float16 or bfloat16)
+    dtype_name = os.environ.get("NS_DTYPE", "")
+    if dtype_name:
+        dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16}
+        if dtype_name in dtype_map:
+            model.set_dtype(dtype_map[dtype_name])
+            mx.eval(model.parameters())
+
     n_params = count_params(model)
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
 
@@ -349,6 +359,19 @@ def main():
     optimizer = optim.Adam(learning_rate=lr_schedule)
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
+
+    # Optional mx.compile for fusing element-wise ops (NS_COMPILE=1)
+    use_compile = int(os.environ.get("NS_COMPILE", "0"))
+    if use_compile:
+        state = [model.state, optimizer.state]
+
+        @partial(mx.compile, inputs=state, outputs=state)
+        def train_step(x, y):
+            loss, grads = loss_and_grad(model, x, y)
+            optimizer.update(model, grads)
+            return loss
+    else:
+        train_step = None
 
     # --- logging ---
     os.makedirs("logs", exist_ok=True)
@@ -399,9 +422,13 @@ def main():
             xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
             x, y = mx.array(xnp), mx.array(ynp)
 
-        train_loss, grads = loss_and_grad(model, x, y)
-        optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state, train_loss)
+        if train_step is not None:
+            train_loss = train_step(x, y)
+            mx.eval(train_loss)
+        else:
+            train_loss, grads = loss_and_grad(model, x, y)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state, train_loss)
 
         step_ms = (time.time() - ts) * 1000
 
