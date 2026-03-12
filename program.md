@@ -31,7 +31,7 @@ To set up a new experiment run:
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
    - `README.md`: repository context and SSM references.
    - `data.py`: fixed infrastructure (dataset download, loading, batching). Do not modify.
-   - `train.py`: the file you modify. S4D model, training loop, evaluation.
+   - `train.py`: the file you modify. Model (S4D/SSD/hybrid blocks), training loop, evaluation.
 4. **Read previous results**: If `results.tsv` exists, read it. If any `knowledge/analysis_*.md` files exist, read the most recent one. These tell you what's been tried before and what worked. Do not retry approaches that have already failed unless you have a specific reason to believe the outcome will be different.
 5. **Verify data downloads work**: Run `uv run python data.py` to prep all datasets if needed.
 6. **Initialize results.tsv**: If `results.tsv` doesn't already exist, create it with just the header row. If it exists from a previous run, append to it.
@@ -40,6 +40,12 @@ To set up a new experiment run:
 ## Experimentation
 
 Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task lm-tok` or `--task dna` or `--task ts`).
+
+**Current priority (mar12):**
+The screening phase is done. Skip C_SCALE experiments (SSD's input-dependent C projection absorbs init scale — no effect on final quality). Next experiments in order:
+1. Hybrid SSD+attention: `--block hybrid --compile --metal-eval` on lm-tok seq512, 1000 steps. Try attention at different layer positions (0 vs 1 vs 2 vs 3). The Mamba-2 paper shows 10% attention is optimal.
+2. 5000-step validation of best config so far (SSD + compile + seq512).
+Do NOT run: RMSNorm+SSD (already failed on lm-tok), seq_len=1024 (watchdog risk), --size medium (watchdog risk).
 
 **Three block types:**
 - `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
@@ -55,8 +61,10 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 - `--dtype bfloat16` (default): Halves memory bandwidth. Works on all Apple Silicon. The 50K vocab projection dominates lm-tok and benefits most from reduced precision.
 - Do NOT use `--dtype float16` — it goes NaN without loss scaling. **Especially bad with SSD: exp overflow in segsum causes immediate NaN.** Use `--dtype float32` if you need full precision for debugging.
 - `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
-- `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
-- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
+- `--metal-eval`: Uses fused Metal kernels during eval passes (~20% faster evals). Forward-only optimization — training always uses pure MLX (autodiff builds the gradient graph during forward, backward is free). Only applies to `--block ssd` and `--block hybrid`.
+- `--grad-accum N`: Gradient accumulation over N microbatches. Effective batch = batch × N with less peak memory. Incompatible with `--compile` (dynamic loop). Use when memory-limited at larger seq_len or batch sizes.
+- `--chunk-size Q`: SSD chunk size (default 64, auto-tuned to 32 for seq_len≥512). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks fit better in Apple Silicon's cache hierarchy — especially important at seq512 where training is bandwidth-limited. Also settable via `NS_CHUNK_SIZE` env var.
+- All flags are composable: `--block ssd --compile --metal-eval --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
 
 **Two language modeling modes:**
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
@@ -64,7 +72,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **Experiment strategy:** Use `--task lm` (fast, ~80ms/step) as a quick proxy to test architectural ideas. Then validate winners on `--task lm-tok` with longer runs. However, some ideas that fail on lm (due to overfitting TinyShakespeare's 1MB) may work on lm-tok (10B tokens, no overfitting). If something fails on lm because of overfitting (train loss much lower than val loss), retry it on lm-tok before discarding.
 
-**Use 1000-step lm-tok runs for quick iteration** (~8 min). This is enough to compare ideas — if something doesn't beat the baseline at 1000 steps, it won't at 3000. Only do 3000+ step runs to validate winners. **While long runs are in the background, keep working** — plan the next experiment, write code, review results. Don't sit idle waiting.
+**Use 1000-step lm-tok runs for quick iteration.** With S4D + compile: ~8 min. With SSD + compile + seq512: ~65 min. This is enough to compare ideas — if something doesn't beat the baseline at 1000 steps, it won't at 3000. Only do 3000+ step runs to validate winners. **While long runs are in the background, keep working** — plan the next experiment, write code, review results. Don't sit idle waiting.
 
 **What you CAN do:**
 - Modify `train.py`: the only file you edit. Everything is fair game: model architecture, SSM parameterization, optimizer, hyperparameters, training loop, initialization, gating, discretization, hybrid layers, etc.
@@ -75,7 +83,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 
 **The goal is simple: get the lowest val_bpb** (for language modeling), **highest accuracy** (for DNA), or **lowest val_mse** (for time series). The model is deliberately naive; there are many known improvements to discover.
 
-**Memory** is a soft constraint. Apple Silicon has unified memory (16GB), and an OOM crash kills the whole system. Use `--size` to scale the model. The default (`small`, d=384, L=4) uses ~42.8M params for lm-tok. `medium` (d=768, L=6, ~100M lm-tok) should fit comfortably. `large` (d=1024, L=12, ~183M lm-tok) is the upper limit — test with a short run first. For lm-tok, scaling d_model increases the embed/head tables linearly (50257×d_model each), so most params are in the vocab projection.
+**Memory & GPU limits**: Apple Silicon has unified memory. The default (`small`, d=384, L=4) uses ~42.8M params for lm-tok and runs comfortably. `medium` and `large` trigger Metal GPU watchdog crashes (the ~5-10s macOS GPU timeout, not OOM). Use `--grad-checkpoint` and `--chunk-size 16` if attempting larger sizes. For lm-tok, most params are in embed+head (50257×d_model each).
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome.
 
@@ -165,49 +173,39 @@ LOOP FOREVER:
 
 ## SSM-specific guidance
 
-The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. These are all done. Here's what's left to explore, roughly in order of expected impact:
+S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. SSD (Mamba-2) is implemented with chunked matmul and hybrid SSM+attention is available. Current focus is on SSD and hybrid experiments.
 
-**Selectivity via Mamba-2 SSD — #1 priority:**
-- The LTI ceiling is real: L=4 and L=6 converge to the exact same val_bpb (~7.47). The fixed B, C, dt mean one convolution kernel for all inputs. Selectivity breaks this ceiling.
-- **Do NOT use a Python for-loop scan.** The mar12 agent proved it's 7x slower than FFT and triggers Metal watchdog at L=256. Mamba-1's approach requires a custom CUDA kernel we can't write in MLX.
-- **Use Mamba-2's SSD algorithm instead.** It replaces the parallel scan with **chunked matrix multiplications** — all ops exist in MLX (matmul, cumsum, exp, reshape). No custom kernels needed.
-- The SSD algorithm: (1) split sequence into chunks of Q=64, (2) intra-chunk matmul (parallel), (3) inter-chunk scan on T/Q elements (tiny, e.g. 2048→32), (4) state-to-output matmul. Steps 1,2,4 are batched matmuls. Step 3 is negligible.
-- Key architecture changes: A becomes **scalar per head per timestep** (not diagonal), multi-head structure (H=d_inner/64), B and C shared across heads (1 head each, MVA pattern), conv1d before SSM, GroupNorm after gating.
-- SSD allows larger state dim (64-256) with no speed penalty. Mamba-1 was limited to N=16.
-- Reference implementation is ~35 lines of PyTorch. See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for full details.
-- Paper: "Transformers are SSMs" (Dao & Gu, 2024) https://arxiv.org/abs/2405.21060
-- **SSD is implemented.** Use `--block ssd` to enable it. The implementation is in `ssd.py`. Comparison at same param count (small, 1000 steps, `--compile`): SSD 7.884 vs S4D 8.199 val_bpb on lm-tok. SSD also broke the LTI ceiling at 3000 steps (7.338 vs S4D's 7.474). SSD is the best block type for lm-tok.
-- **SSD is ~14% slower per step** than S4D with `--compile` (456 vs 401 ms/step at small/seq256). Use `--compile` on all SSD runs.
+**SSD (Mamba-2) — implemented, use `--block ssd`:**
+- Implementation in `ssd.py`. Chunked matmul algorithm, input-dependent A/B/C (selective).
+- Broke the LTI ceiling: 7.338 val_bpb at 3000 steps vs S4D's 7.474. Best block type for lm-tok.
+- ~14% slower per step than S4D with `--compile` (456 vs 401 ms/step at small/seq256). Always use `--compile`.
+- seq512 validated: 7.548 vs 7.826 at 1000 steps. Use `NS_SEQ_LEN=512` for all SSD lm-tok runs.
+- See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for design details.
 
-**Quick wins to try on lm-tok:**
-- **C init scale**: Currently 0.01 × randn — very small. Try 0.1 or 1.0 so the SSM output has more influence early in training.
-- **Softplus for dt** instead of exp: Mamba uses softplus(linear(x)). Different gradient profile — clips dt gradients to [0,1], potentially more stable.
-- **RMSNorm** instead of LayerNorm: Mamba-2 uses RMSNorm. Simpler (no mean subtraction), slightly faster.
-- **Conv1d before SSM on lm-tok**: Failed on lm (overfitting), but lm-tok has 10,000x more data. Worth retrying.
-- ~~**seq_len=512 on lm-tok**~~: **Validated.** SSD + seq512 = 7.548 vs seq256 = 7.826 at 1000 steps. Use `--seq-len 512` for SSD lm-tok runs. (seq_len=1024 not yet tested.)
+**Tested and resolved (don't retry):**
+- C init scale: no effect on SSD (input-dependent C projection absorbs init scale immediately). 0.1 also no help on S4D.
+- Softplus for dt: no improvement on lm.
+- RMSNorm: slightly worse than LayerNorm on lm-tok (7.826 vs 7.760). Equal on lm.
+- Weight decay (AdamW wd=0.1): hurts on lm-tok.
+- seq_len=512: validated, use it.
+- Conv1d before SSM: helps on S4D lm-tok (7.796), untested with SSD — worth trying.
 
-**Architecture:**
-- Hybrid: **implemented** as `--block hybrid`. Mix SSD layers with attention layers. See block types above.
+**Unexplored ideas:**
 - Different MLP designs (SwiGLU).
-
-**Discretization:**
-- ZOH (zero-order hold) vs bilinear vs Euler discretization.
-- The current implementation uses a simple exponential discretization.
+- Longer warmup ratios for 5K+ step runs.
+- Cosine decay min LR tuning for longer runs.
 
 **Speed & precision:**
-- All performance flags are implemented as CLI args — see "Performance flags" in Experimentation above.
-- **Recommended for lm-tok**: `--compile` on every run. Add `--grad-checkpoint` for `--size medium` or larger.
-- **Recommended for SSD + lm-tok**: `--compile` on every run (19% faster, no quality loss). Add `--chunk-size 32` if you hit Metal GPU watchdog crashes.
+- **Recommended for SSD + lm-tok**: `--compile --metal-eval` on every run. Compile gives 19% faster training, metal-eval gives ~20% faster evals. Chunk size auto-tunes to Q=32 at seq512.
 - **bfloat16 with SSD**: Works but costs ~0.07 bpb quality (7.620 vs 7.548). Acceptable for quick iteration, use float32 for final runs.
-- Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
+- **Bandwidth-limited at seq512**: Training is memory-bandwidth-limited on Apple Silicon at seq512. Use `--compile` (fewer kernel launches), `--metal-eval` (faster evals), and let chunk size auto-tune. `--grad-accum` can simulate larger batch without extra memory.
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
 **Optimizer & training:**
-- Learning rate warmup ratio: current warmup is min(100, steps/10). For longer runs (5K+), the warmup ratio matters — experiment with 1-5% warmup.
-- Cosine decay min LR: currently decays to 1e-5. For longer runs, the final LR matters more.
-- Gradient accumulation: simulate larger effective batch size without more memory. Accumulate gradients over N steps before updating.
-- Weight decay hurts on lm-tok (mar12 tested AdamW weight_decay=0.1: 7.778 vs 7.760 baseline). Don't retry.
-- Model scaling: use `--size medium` or `--size large` to test bigger models. If an idea works at `small`, validate at `medium` to check scaling.
+- LR=7e-4 is the sweet spot (swept 5e-4 through 1e-3). Don't re-sweep.
+- Gradient accumulation: `--grad-accum N` (incompatible with `--compile`).
+- Weight decay hurts on lm-tok. Don't retry.
+- Model scaling: `--size medium` and `--size large` crash with Metal watchdog. Stick with `small` for now.
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.
 
