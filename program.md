@@ -150,12 +150,16 @@ LOOP FOREVER:
 
 The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. These are all done. Here's what's left to explore, roughly in order of expected impact:
 
-**Selectivity (the Mamba insight) — #1 priority, never tried:**
-- Make B, C, dt input-dependent (functions of the input via linear projections, not fixed parameters). This is what makes Mamba work: the model can selectively remember or forget based on content.
-- This changes the model from a fixed linear system to a data-dependent one.
-- WARNING: selective SSMs cannot use FFT convolution. You must replace the convolutional path with either a sequential scan or a parallel scan. A simple sequential scan (`for t in range(L): ...`) works but is slow. A parallel scan is faster but more complex to implement. Start with the sequential scan to prove the idea works, optimize later.
-- **Evidence this matters:** On lm-tok, L=4 and L=6 converge to the exact same val_bpb (~7.47). This is NOT a capacity limit — it's an LTI (Linear Time-Invariant) inductive bias limit. The fixed B, C, dt mean the model applies one convolution kernel to all inputs. Selectivity breaks this ceiling.
-- Start with: reduced state_dim=16 (Mamba uses N=16), seq_len=128, to manage speed with Python for loop. Prove quality improves first, optimize later.
+**Selectivity via Mamba-2 SSD — #1 priority:**
+- The LTI ceiling is real: L=4 and L=6 converge to the exact same val_bpb (~7.47). The fixed B, C, dt mean one convolution kernel for all inputs. Selectivity breaks this ceiling.
+- **Do NOT use a Python for-loop scan.** The mar12 agent proved it's 7x slower than FFT and triggers Metal watchdog at L=256. Mamba-1's approach requires a custom CUDA kernel we can't write in MLX.
+- **Use Mamba-2's SSD algorithm instead.** It replaces the parallel scan with **chunked matrix multiplications** — all ops exist in MLX (matmul, cumsum, exp, reshape). No custom kernels needed.
+- The SSD algorithm: (1) split sequence into chunks of Q=64, (2) intra-chunk matmul (parallel), (3) inter-chunk scan on T/Q elements (tiny, e.g. 2048→32), (4) state-to-output matmul. Steps 1,2,4 are batched matmuls. Step 3 is negligible.
+- Key architecture changes: A becomes **scalar per head per timestep** (not diagonal), multi-head structure (H=d_inner/64), B and C shared across heads (1 head each, MVA pattern), conv1d before SSM, GroupNorm after gating.
+- SSD allows larger state dim (64-256) with no speed penalty. Mamba-1 was limited to N=16.
+- Reference implementation is ~35 lines of PyTorch. See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for full details.
+- Paper: "Transformers are SSMs" (Dao & Gu, 2024) https://arxiv.org/abs/2405.21060
+- **Implementation plan:** Build SSD in `ssd.py` (new file), test independently, then add `--block {s4d,ssd}` flag to train.py for A/B comparison.
 
 **Quick wins to try on lm-tok:**
 - **C init scale**: Currently 0.01 × randn — very small. Try 0.1 or 1.0 so the SSM output has more influence early in training.
@@ -173,9 +177,11 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - The current implementation uses a simple exponential discretization.
 
 **Speed & precision:**
-- Mixed precision (float16) training. MLX supports `mx.float16` natively. The big win is on lm-tok where the 50K vocab head projection dominates step time. Use `model.astype(mx.float16)` or cast specific layers. Keep optimizer state in float32 to avoid instability.
-- mx.compile for speed — wraps the forward/backward in a compiled graph.
-- Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Optimizing the SSM won't help if the vocab projection is the bottleneck.
+- **mx.compile** — wrap the training step to fuse element-wise ops. Must be a pure function with explicit state (`inputs=[model.state, optimizer.state, mx.random.state]`). Recompiles on shape changes. Easy win.
+- **Mixed precision** — `model.set_dtype(mx.bfloat16)` or `mx.float16`. bfloat16 preferred (better range, no loss scaling needed). Use Python scalars for scalar ops to avoid accidental upcasting. `mx.fast.layer_norm` and `mx.fast.rms_norm` accumulate in higher precision automatically.
+- **Gradient checkpointing** — `@mx.checkpoint` on per-block forward pass. Recomputes activations during backward instead of storing. Enables larger models on 16GB.
+- Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
+- See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
 **Optimizer & training:**
 - Learning rate warmup ratio: current warmup is min(100, steps/10). For longer runs (5K+), the warmup ratio matters — experiment with 1-5% warmup.
