@@ -141,14 +141,15 @@ For lm-tok, the 50K vocab embedding adds significant overhead (e.g. `small` = 42
 
 ## Block types
 
-Two SSM architectures, same training interface:
+Three architectures, same training interface:
 
 ```bash
-uv run python train.py --block s4d    # S4D diagonal SSM (default) — FFT convolution, fixed A/B/C
-uv run python train.py --block ssd    # Mamba-2 SSD — chunked matmul, input-dependent A/B/C (selective)
+uv run python train.py --block s4d    # S4D diagonal SSM (default) -- FFT convolution, fixed A/B/C
+uv run python train.py --block ssd    # Mamba-2 SSD -- chunked matmul, input-dependent A/B/C (selective)
+uv run python train.py --block hybrid --attn-layers 2  # SSD + attention (10% attention layers)
 ```
 
-S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. SSD uses the same `--size` presets and all the same tooling (generation, visualization, benchmarks).
+S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. Hybrid adds a few attention layers to SSD for arbitrary lookback -- the Mamba-2 paper shows 10% attention is optimal. All block types use the same `--size` presets and tooling (generation, visualization, benchmarks).
 
 ## Performance flags
 
@@ -159,11 +160,13 @@ uv run python train.py --grad-checkpoint        # trade compute for memory (enab
 uv run python train.py --chunk-size 32          # smaller SSD chunks (avoids Metal GPU watchdog on long runs)
 ```
 
-Training uses bfloat16 by default. All flags are composable: `--compile --grad-checkpoint --chunk-size 32`. Works with both S4D and SSD. Hardware is auto-detected and training memory is estimated at startup.
+Training uses bfloat16 by default. All flags are composable: `--compile --grad-checkpoint --chunk-size 32`. Works with all block types (S4D, SSD, and hybrid). Hardware is auto-detected and training memory is estimated at startup.
 
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
+
+> **Note:** Hybrid models (`--block hybrid`) use a KV cache for attention layers, so memory grows with context length. SSM layers remain constant-memory. Use `--attn-type sliding --attn-window K` to bound the KV cache.
 
 ```bash
 # Train and save a checkpoint (best model auto-saved to checkpoints/lm/best/)

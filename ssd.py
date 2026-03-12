@@ -40,7 +40,7 @@ def segsum(x):
     return x_segsum
 
 
-def ssd_forward(X, A, B, C, block_len=64):
+def ssd_forward(X, A, B, C, block_len=64, use_metal=False):
     """SSD forward pass: chunked matmul replaces parallel scan.
 
     Args:
@@ -49,6 +49,8 @@ def ssd_forward(X, A, B, C, block_len=64):
         B: (batch, length, n_heads, d_state)  -- input projection
         C: (batch, length, n_heads, d_state)  -- output projection
         block_len: chunk size Q (default 64)
+        use_metal: use fused Metal kernels for Step 1 (inference/eval only,
+            not differentiable — do not use during training)
 
     Returns:
         Y: (batch, length, n_heads, d_head)   -- output
@@ -70,12 +72,17 @@ def ssd_forward(X, A, B, C, block_len=64):
     A_cumsum = mx.cumsum(A, axis=-1)  # (B, H, C, Q)
 
     # === Step 1: Intra-chunk outputs (diagonal blocks) ===
-    # L_mask[i,j] = exp(sum of A from j+1 to i) within each chunk
-    L_mask = mx.exp(segsum(A))  # (B, H, C, Q, Q)
-    # CB^T gram matrix masked by L, then applied to X
-    # Decompose the 4-operand einsum into two steps for MLX compatibility
-    CB = mx.einsum("bclhn,bcshn->bhcls", C, B)  # (B, H, C, Q, Q)
-    Y_diag = mx.einsum("bhcls,bcshp->bclhp", L_mask * CB, X)  # (B, C, Q, H, P)
+    if use_metal:
+        from metal_kernels import ssd_intra_chunk_metal
+
+        Y_diag = ssd_intra_chunk_metal(A, B, C, X)
+    else:
+        # L_mask[i,j] = exp(sum of A from j+1 to i) within each chunk
+        L_mask = mx.exp(segsum(A))  # (B, H, C, Q, Q)
+        # CB^T gram matrix masked by L, then applied to X
+        # Decompose the 4-operand einsum into two steps for MLX compatibility
+        CB = mx.einsum("bclhn,bcshn->bhcls", C, B)  # (B, H, C, Q, Q)
+        Y_diag = mx.einsum("bhcls,bcshp->bclhp", L_mask * CB, X)  # (B, C, Q, H, P)
 
     # === Step 2: Chunk states ===
     # Decay factors from each position to end of its chunk
@@ -115,12 +122,13 @@ class SSDLayer(nn.Module):
     A/B/C input-dependent (selective) and uses chunked matmul for training.
     """
 
-    def __init__(self, d_inner, n_heads, d_state=64, chunk_size=64):
+    def __init__(self, d_inner, n_heads, d_state=64, chunk_size=64, use_metal=False):
         super().__init__()
         self.n_heads = n_heads
         self.d_head = d_inner // n_heads
         self.d_state = d_state
         self.chunk_size = chunk_size
+        self.use_metal = use_metal
 
         # Input-dependent projections for A, B, C
         self.a_proj = nn.Linear(d_inner, n_heads, bias=False)
@@ -156,7 +164,7 @@ class SSDLayer(nn.Module):
             C_proj = mx.pad(C_proj, [(0, 0), (0, pad_len), (0, 0), (0, 0)])
 
         # SSD forward
-        Y, _ = ssd_forward(X, A, B_proj, C_proj, block_len=Q)
+        Y, _ = ssd_forward(X, A, B_proj, C_proj, block_len=Q, use_metal=self.use_metal)
 
         # Trim padding and reshape back
         if pad_len > 0:
@@ -173,7 +181,7 @@ class SSDBlock(nn.Module):
     LN -> parallel projections (X, Z, A, B, C) -> conv1d -> SSD -> SiLU gate -> out
     """
 
-    def __init__(self, d_model, d_state=64, d_head=64, expand=2, chunk_size=64):
+    def __init__(self, d_model, d_state=64, d_head=64, expand=2, chunk_size=64, use_metal=False):
         super().__init__()
         d_inner = d_model * expand
         n_heads = d_inner // d_head
@@ -190,7 +198,7 @@ class SSDBlock(nn.Module):
         self.conv_pad = 3  # left-pad for causal
 
         # SSD layer
-        self.ssd = SSDLayer(d_inner, n_heads, d_state=d_state, chunk_size=chunk_size)
+        self.ssd = SSDLayer(d_inner, n_heads, d_state=d_state, chunk_size=chunk_size, use_metal=use_metal)
 
         # Output
         self.out_proj = nn.Linear(d_inner, d_model)
