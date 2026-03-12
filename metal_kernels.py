@@ -210,6 +210,9 @@ _ssd_intra_chunk_simd_kernel = mx.fast.metal_kernel(
     output_names=["Y"],
     header="#include <metal_simdgroup_matrix>\n",
     source="""
+        // All inputs are float32 (caller casts). This lets simdgroup_load
+        // read directly from device memory without per-element staging.
+
         uint Q_val = (uint)dims[0];
         uint H = (uint)dims[1];
         uint nC = (uint)dims[2];
@@ -236,18 +239,16 @@ _ssd_intra_chunk_simd_kernel = mx.fast.metal_kernel(
         uint x_base = b * nC * Q_val * H * P + c * Q_val * H * P;
         uint a_base = b * H * nC * Q_val + h * nC * Q_val + c * Q_val;
 
-        // Threadgroup memory (all float32 for accumulation)
+        // Threadgroup memory
         threadgroup float CB[64 * 64];       // Q * Q
-        threadgroup float B_T_tile[8 * 64];  // transposed B block
-        threadgroup float C_tile[8 * 64];    // C block for simdgroup load
-        threadgroup float X_tile[8 * 64];    // X block for simdgroup load
+        threadgroup float B_T_tile[8 * 64];  // transposed B block (8 x Q)
         threadgroup float cumsum_buf[64];
 
         // === Step 1: Cumsum of A ===
         if (tid == 0) {
             float running = 0.0f;
             for (uint k = 0; k < Q_val; k++) {
-                running += (float)A[a_base + k];
+                running += A[a_base + k];
                 cumsum_buf[k] = running;
             }
         }
@@ -264,15 +265,12 @@ _ssd_intra_chunk_simd_kernel = mx.fast.metal_kernel(
 
         // Tile over N in blocks of 8
         for (uint n_block = 0; n_block < N; n_block += 8) {
-            // Cooperatively load B[:, n_block:+8] transposed -> B_T_tile[8, Q]
-            // and C[:, n_block:+8] -> C_tile[Q, 8] (row-major, stride=8)
+            // Cooperatively transpose B[:, n_block:+8] -> B_T_tile[8, Q]
             for (uint i = tid; i < 8 * Q_val; i += num_threads) {
                 uint n_off = i / Q_val;
                 uint q_idx = i % Q_val;
                 B_T_tile[n_off * Q_val + q_idx] =
-                    (float)B[bc_base + q_idx * stride_bn + h * N + n_block + n_off];
-                C_tile[q_idx * 8 + n_off] =
-                    (float)C_in[bc_base + q_idx * stride_bn + h * N + n_block + n_off];
+                    B[bc_base + q_idx * stride_bn + h * N + n_block + n_off];
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -283,8 +281,10 @@ _ssd_intra_chunk_simd_kernel = mx.fast.metal_kernel(
 
                 simdgroup_float8x8 matC_tile, matBT_tile, acc;
                 simdgroup_load(acc, CB + tile_l * 8 * Q_val + tile_s * 8, Q_val);
-                // Load C from threadgroup (already float32, stride=8)
-                simdgroup_load(matC_tile, C_tile + tile_l * 8 * 8, (ulong)8);
+                // C directly from device memory (float32, stride = H*N)
+                simdgroup_load(matC_tile,
+                    C_in + bc_base + tile_l * 8 * stride_bn + h * N + n_block,
+                    stride_bn);
                 simdgroup_load(matBT_tile, B_T_tile + tile_s * 8, Q_val);
                 simdgroup_multiply_accumulate(acc, matC_tile, matBT_tile, acc);
                 simdgroup_store(acc, CB + tile_l * 8 * Q_val + tile_s * 8, Q_val);
@@ -316,31 +316,17 @@ _ssd_intra_chunk_simd_kernel = mx.fast.metal_kernel(
             for (uint k = 0; k < Q_val; k += 8) {
                 simdgroup_float8x8 matCB, matX;
                 simdgroup_load(matCB, CB + tile_row * 8 * Q_val + k, Q_val);
-
-                // Load X[k:k+8, tile_col*8:+8] through per-simdgroup scratch
-                // X_tile has 8*Q floats — each simdgroup uses 64-float slice
-                threadgroup float* x_scratch = X_tile + sid * 64;
-                for (uint ii = thread_index_in_simdgroup; ii < 64; ii += 32) {
-                    uint r = ii / 8;
-                    uint cc = ii % 8;
-                    x_scratch[r * 8 + cc] =
-                        (float)X[x_base + (k + r) * stride_xp + h * P + tile_col * 8 + cc];
-                }
-                simdgroup_barrier(mem_flags::mem_threadgroup);
-                simdgroup_load(matX, x_scratch, (ulong)8);
+                // X directly from device memory (float32, stride = H*P)
+                simdgroup_load(matX,
+                    X + x_base + k * stride_xp + h * P + tile_col * 8,
+                    stride_xp);
                 simdgroup_multiply_accumulate(acc, matCB, matX, acc);
             }
 
-            // Store Y — cast back to output type via same per-simdgroup scratch
-            threadgroup float* y_scratch = X_tile + sid * 64;
-            simdgroup_store(acc, y_scratch, (ulong)8);
-            simdgroup_barrier(mem_flags::mem_threadgroup);
-            uint y_base_off = x_base + tile_row * 8 * stride_xp + h * P + tile_col * 8;
-            for (uint ii = thread_index_in_simdgroup; ii < 64; ii += 32) {
-                uint r = ii / 8;
-                uint cc = ii % 8;
-                Y[y_base_off + r * stride_xp + cc] = (T)y_scratch[r * 8 + cc];
-            }
+            // Store Y directly (float32 output)
+            simdgroup_store(acc,
+                Y + x_base + tile_row * 8 * stride_xp + h * P + tile_col * 8,
+                stride_xp);
         }
     """,
     ensure_row_contiguous=True,
@@ -356,18 +342,23 @@ def _ssd_intra_chunk_raw(A, B, C, X):
 
     # Use simdgroup variant when dimensions are compatible
     if Q <= 64 and Q % 8 == 0 and N % 8 == 0 and P % 8 == 0:
+        # Batch-cast to float32 (faster than per-element casts in kernel)
+        A_f = A.astype(mx.float32) if orig_dtype != mx.float32 else A
+        B_f = B.astype(mx.float32) if orig_dtype != mx.float32 else B
+        C_f = C.astype(mx.float32) if orig_dtype != mx.float32 else C
+        X_f = X.astype(mx.float32) if orig_dtype != mx.float32 else X
         dims = mx.array([Q, H, nC, P, N, Bsz], dtype=mx.uint32)
         total_slices = Bsz * H * nC
         threads_per_tg = 256  # 8 simdgroups × 32 threads
         results = _ssd_intra_chunk_simd_kernel(
-            inputs=[A, B, C, X, dims],
-            template=[("T", orig_dtype)],
+            inputs=[A_f, B_f, C_f, X_f, dims],
             grid=(total_slices * threads_per_tg, 1, 1),
             threadgroup=(threads_per_tg, 1, 1),
             output_shapes=[X.shape],
-            output_dtypes=[orig_dtype],
+            output_dtypes=[mx.float32],
         )
-        return results[0]
+        out = results[0]
+        return out.astype(orig_dtype) if orig_dtype != mx.float32 else out
 
     # Fallback: scalar kernel
     return _ssd_intra_chunk_scalar(A, B, C, X)
@@ -481,12 +472,10 @@ def ssd_intra_chunk_metal(A, B, C, X):
 
 @ssd_intra_chunk_metal.vjp
 def ssd_intra_chunk_vjp(primals, cotangents, outputs):
-    """Backward: full MLX autodiff (faster than scalar Metal backward)."""
+    """Backward: MLX autodiff for all gradients."""
     A, B, C, X = primals
     dY = cotangents
 
-    # All gradients via MLX autodiff — faster than scalar Metal kernels
-    # because MLX uses optimized BLAS for the matmul backward passes
     _, grads = mx.vjp(_ssd_intra_chunk_mlx, [A, B, C, X], [dY])
     return tuple(grads)
 
