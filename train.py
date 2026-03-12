@@ -19,6 +19,9 @@ Performance flags:
   python train.py --compile                # fuse ops via mx.compile
   python train.py --dtype float32           # full precision (bfloat16 is default)
   python train.py --grad-checkpoint        # trade compute for memory
+  python train.py --metal-eval             # fused Metal kernels for eval (~20% faster)
+  python train.py --grad-accum 4           # gradient accumulation (eff batch = batch * 4)
+  python train.py --chunk-size 32          # SSD chunk size (auto-tuned for seq512)
 """
 
 import argparse
@@ -417,6 +420,13 @@ def count_params(model):
     return sum(x.size for _, x in nn.utils.tree_flatten(model.parameters()))
 
 
+def set_metal(model, use_metal):
+    """Toggle Metal kernels on SSD layers (for eval-only acceleration)."""
+    for block in model.blocks:
+        if hasattr(block, "ssd"):
+            block.ssd.use_metal = use_metal
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
@@ -436,7 +446,8 @@ def main():
     parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
     parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
-    parser.add_argument("--metal", action="store_true", help="(ignored, kept for compat) Metal kernels are inference-only")
+    parser.add_argument("--grad-accum", type=int, default=1, help="Gradient accumulation steps (effective batch = batch * accum)")
+    parser.add_argument("--metal-eval", action="store_true", help="Use fused Metal kernels during eval (forward-only, ~20%% faster)")
     parser.add_argument(
         "--attn-layers",
         default=None,
@@ -489,6 +500,14 @@ def main():
     block_type = args.block
     max_steps = args.steps or int(os.environ.get("NS_STEPS", MAX_STEPS_DEFAULT.get(task, 1000)))
     lr = args.lr
+    use_metal_eval = args.metal_eval and block_type in ("ssd", "hybrid")
+
+    # Chunk size tuning: smaller chunks fit better in Apple Silicon cache at longer sequences.
+    # Default Q=64 works well for seq_len<=256; Q=32 is better for seq_len>=512.
+    chunk_size = args.chunk_size
+    if chunk_size == CHUNK_SIZE and "NS_CHUNK_SIZE" not in os.environ and SEQ_LEN >= 512 and block_type in ("ssd", "hybrid"):
+        chunk_size = 32
+        print(f"  Auto chunk_size={chunk_size} for seq_len={SEQ_LEN} (override with --chunk-size)")
 
     attn_layers = None
     if args.attn_layers:
@@ -503,7 +522,7 @@ def main():
         model = NanoSSM(
             "lm",
             block_type=block_type,
-            chunk_size=args.chunk_size,
+            chunk_size=chunk_size,
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
@@ -517,7 +536,7 @@ def main():
             "lm-tok",
             vocab_size=vocab_size,
             block_type=block_type,
-            chunk_size=args.chunk_size,
+            chunk_size=chunk_size,
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
@@ -530,7 +549,7 @@ def main():
             "dna",
             n_classes=n_classes,
             block_type=block_type,
-            chunk_size=args.chunk_size,
+            chunk_size=chunk_size,
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
@@ -545,7 +564,7 @@ def main():
             n_features=n_features,
             pred_len=PRED_LEN,
             block_type=block_type,
-            chunk_size=args.chunk_size,
+            chunk_size=chunk_size,
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
@@ -567,6 +586,9 @@ def main():
 
     n_params = count_params(model)
 
+    # gradient accumulation
+    grad_accum = args.grad_accum
+
     # hardware info + memory warning
     hw = detect_hardware()
     dtype_bytes = 2 if args.dtype != "float32" else 4
@@ -582,11 +604,16 @@ def main():
         flags.append("compiled")
     if args.grad_checkpoint:
         flags.append("grad-ckpt")
-    if args.metal:
-        flags.append("metal")
+    if use_metal_eval:
+        flags.append("metal-eval")
+    if grad_accum > 1:
+        flags.append(f"grad-accum={grad_accum}")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
-    print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory")
+    batch_info = f"batch={batch_size}"
+    if grad_accum > 1:
+        batch_info += f" (eff={batch_size * grad_accum} via {grad_accum}x accum)"
+    print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory | {batch_info}")
 
     # Cosine decay with linear warmup
     warmup_steps = min(100, max_steps // 10)
@@ -609,8 +636,30 @@ def main():
         optimizer.update(model, grads)
         return loss
 
-    if args.compile:
-        train_step = mx.compile(train_step, inputs=state, outputs=state)
+    if grad_accum <= 1:
+        if args.compile:
+            train_step = mx.compile(train_step, inputs=state, outputs=state)
+    else:
+        # Gradient accumulation: average gradients over microbatches
+        def microbatch_grad(x, y):
+            loss, grads = loss_and_grad(model, x, y)
+            return loss, grads
+
+        def accum_train_step(xs, ys):
+            total_loss = mx.zeros(())
+            acc_grads = None
+            for i in range(grad_accum):
+                loss, grads = microbatch_grad(xs[i], ys[i])
+                total_loss = total_loss + loss
+                if acc_grads is None:
+                    acc_grads = grads
+                else:
+                    acc_grads = mx.tree_map(lambda a, b: a + b, acc_grads, grads)
+            avg_grads = mx.tree_map(lambda g: g / grad_accum, acc_grads)
+            optimizer.update(model, avg_grads)
+            return total_loss / grad_accum
+
+        train_step = accum_train_step
 
     # --- logging ---
     os.makedirs("logs", exist_ok=True)
@@ -638,7 +687,7 @@ def main():
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
             "block_type": block_type,
-            "chunk_size": args.chunk_size,
+            "chunk_size": chunk_size,
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size
@@ -657,22 +706,37 @@ def main():
     for step in range(max_steps):
         ts = time.time()
 
-        if task in ("lm", "lm-tok"):
-            xnp, ynp = get_batch_lm(train_data, batch_size, SEQ_LEN)
-            x, y = mx.array(xnp), mx.array(ynp)
-        elif task == "dna":
-            xnp, ynp = get_batch_dna(train_seqs, train_labels, batch_size)
-            x, y = mx.array(xnp), mx.array(ynp)
-        elif task == "ts":
-            xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
-            x, y = mx.array(xnp), mx.array(ynp)
-
-        train_loss = train_step(x, y)
+        if grad_accum <= 1:
+            if task in ("lm", "lm-tok"):
+                xnp, ynp = get_batch_lm(train_data, batch_size, SEQ_LEN)
+                x, y = mx.array(xnp), mx.array(ynp)
+            elif task == "dna":
+                xnp, ynp = get_batch_dna(train_seqs, train_labels, batch_size)
+                x, y = mx.array(xnp), mx.array(ynp)
+            elif task == "ts":
+                xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
+                x, y = mx.array(xnp), mx.array(ynp)
+            train_loss = train_step(x, y)
+        else:
+            micro_bs = batch_size // grad_accum
+            xs, ys = [], []
+            for _ in range(grad_accum):
+                if task in ("lm", "lm-tok"):
+                    xnp, ynp = get_batch_lm(train_data, micro_bs, SEQ_LEN)
+                elif task == "dna":
+                    xnp, ynp = get_batch_dna(train_seqs, train_labels, micro_bs)
+                elif task == "ts":
+                    xnp, ynp = get_batch_ts(train_data, micro_bs, SEQ_LEN, PRED_LEN)
+                xs.append(mx.array(xnp))
+                ys.append(mx.array(ynp))
+            train_loss = train_step(xs, ys)
         mx.eval(state, train_loss)
 
         step_ms = (time.time() - ts) * 1000
 
         if step % EVAL_INTERVAL == 0 or step == max_steps - 1:
+            if use_metal_eval:
+                set_metal(model, True)
             if task in ("lm", "lm-tok"):
                 metrics = evaluate_lm(model, val_data, batch_size, EVAL_STEPS)
                 extra = [f"{metrics['val_bpb']:.4f}"]
@@ -685,6 +749,8 @@ def main():
                 metrics = evaluate_ts(model, val_data, batch_size, EVAL_STEPS)
                 extra = [f"{metrics['val_mse']:.4f}", f"{metrics['val_mae']:.4f}"]
                 status = f"mse {metrics['val_mse']:.4f} mae {metrics['val_mae']:.4f}"
+            if use_metal_eval:
+                set_metal(model, False)
 
             total_s = time.time() - t0
             tl = train_loss.item()
