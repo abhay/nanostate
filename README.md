@@ -151,6 +151,28 @@ uv run python train.py --block hybrid --attn-layers 2  # SSD + attention (10% at
 
 S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. Hybrid adds a few attention layers to SSD for arbitrary lookback -- the Mamba-2 paper shows 10% attention is optimal. All block types use the same `--size` presets and tooling (generation, visualization, benchmarks).
 
+### Block type comparison
+
+Same param count, same settings, `--compile`. Run with `python compare.py`.
+
+**Byte-level LM** (TinyShakespeare, tiny, 200 steps):
+
+| Block | val_bpb | Params | ms/step |
+|-------|---------|--------|---------|
+| **SSD** | **2.545** | 604K | 42 |
+| hybrid | 2.699 | 536K | 36 |
+| S4D | 2.927 | 662K | 22 |
+
+**Token-level LM** (FineWebEdu BPE, small, 1000 steps):
+
+| Block | val_bpb | Params | ms/step |
+|-------|---------|--------|---------|
+| **SSD** | **7.884** | 42.6M | 456 |
+| S4D | 8.199 | 42.8M | 401 |
+| hybrid | 8.211 | 42.2M | 437 |
+
+SSD's selectivity (input-dependent A, B, C) consistently outperforms S4D's fixed convolution kernel. The LTI ceiling is real: S4D at L=4 and L=6 converge to the same val_bpb, while SSD breaks through. Hybrid hasn't shown gains yet at these training durations.
+
 ## Performance flags
 
 ```bash
