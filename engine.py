@@ -40,6 +40,8 @@ def load_model(checkpoint_dir):
         kwargs["vocab_size"] = config["vocab_size"]
     if config.get("block_type"):
         kwargs["block_type"] = config["block_type"]
+    if config.get("chunk_size"):
+        kwargs["chunk_size"] = config["chunk_size"]
     model = train_module.NanoSSM(config["task"], **kwargs)
     model.load_weights(os.path.join(checkpoint_dir, "model.npz"))
     mx.eval(model.parameters())

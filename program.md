@@ -45,6 +45,14 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 - `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
 - `--block ssd`: Mamba-2 SSD with chunked matmul. Input-dependent A/B/C (selective). Slower per step but breaks the LTI ceiling. **Use this for lm-tok experiments** — S4D L=4 and L=6 converge to the same val_bpb, SSD does not.
 
+**Performance flags (use these!):**
+- `--compile`: Fuses element-wise ops via `mx.compile`. Adds ~2-3s JIT overhead on first step, then faster steady-state. Use on all runs longer than 100 steps.
+- `--dtype bfloat16` (default): Halves memory bandwidth. Works on all Apple Silicon. The 50K vocab projection dominates lm-tok and benefits most from reduced precision.
+- Do NOT use `--dtype float16` — it goes NaN without loss scaling. Use `--dtype float32` if you need full precision for debugging.
+- `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
+- `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
+- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`
+
 **Two language modeling modes:**
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
 - `--task lm-tok`: BPE token-level FineWebEdu (GPT-2 tokenizer, 50K vocab). Slower but avoids overfitting. This is the real benchmark.
@@ -182,9 +190,9 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - The current implementation uses a simple exponential discretization.
 
 **Speed & precision:**
-- **mx.compile** — wrap the training step to fuse element-wise ops. Must be a pure function with explicit state (`inputs=[model.state, optimizer.state, mx.random.state]`). Recompiles on shape changes. Easy win.
-- **Mixed precision** — `model.set_dtype(mx.bfloat16)` or `mx.float16`. bfloat16 preferred (better range, no loss scaling needed). Use Python scalars for scalar ops to avoid accidental upcasting. `mx.fast.layer_norm` and `mx.fast.rms_norm` accumulate in higher precision automatically.
-- **Gradient checkpointing** — `@mx.checkpoint` on per-block forward pass. Recomputes activations during backward instead of storing. Enables larger models on 16GB.
+- All performance flags are implemented as CLI args — see "Performance flags" in Experimentation above.
+- **Recommended for lm-tok**: `--compile` on every run. Add `--grad-checkpoint` for `--size medium` or larger.
+- **Recommended for SSD + lm-tok**: `--compile --chunk-size 32` (smaller chunks avoid Metal GPU watchdog crashes).
 - Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 

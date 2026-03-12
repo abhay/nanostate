@@ -154,11 +154,12 @@ S4D is fast and stable. SSD adds selectivity (the model can choose what to remem
 
 ```bash
 uv run python train.py --compile                # fuse ops via mx.compile (faster steps)
-uv run python train.py --dtype bfloat16          # mixed precision (bfloat16 recommended, float16 also works)
-uv run python train.py --grad-checkpoint         # trade compute for memory (enables larger models on 16GB)
+uv run python train.py --dtype float32          # full precision (bfloat16 is default)
+uv run python train.py --grad-checkpoint        # trade compute for memory (enables larger models on 16GB)
+uv run python train.py --chunk-size 32          # smaller SSD chunks (avoids Metal GPU watchdog on long runs)
 ```
 
-All flags are composable: `--compile --dtype bfloat16 --grad-checkpoint`. Works with both S4D and SSD.
+Training uses bfloat16 by default. All flags are composable: `--compile --grad-checkpoint --chunk-size 32`. Works with both S4D and SSD. Hardware is auto-detected and training memory is estimated at startup.
 
 ## Generation
 

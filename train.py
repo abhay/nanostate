@@ -17,7 +17,7 @@ Model sizes (byte-level LM params):
 
 Performance flags:
   python train.py --compile                # fuse ops via mx.compile
-  python train.py --dtype bfloat16         # mixed precision (bfloat16 recommended)
+  python train.py --dtype float32           # full precision (bfloat16 is default)
   python train.py --grad-checkpoint        # trade compute for memory
 """
 
@@ -44,6 +44,44 @@ from data import (
 )
 
 # ---------------------------------------------------------------------------
+# Hardware detection
+# ---------------------------------------------------------------------------
+
+
+def detect_hardware():
+    """Detect Apple Silicon chip and capabilities."""
+    info = mx.device_info()
+    name = info.get("device_name", "Unknown")
+    memory_bytes = info.get("memory_size", 0)
+    memory_gb = memory_bytes / (1024**3)
+
+    # Chip generation from device name (M1=1, M2=2, ..., M5=5)
+    gen = 1
+    for g in range(9, 0, -1):
+        if f"M{g}" in name:
+            gen = g
+            break
+
+    return {
+        "name": name,
+        "memory_gb": memory_gb,
+        "generation": gen,
+    }
+
+
+def estimate_training_memory_gb(n_params, dtype_bytes=4):
+    """Rough estimate of peak training memory.
+
+    params + grads + optimizer state (Adam m,v in fp32) + activations.
+    """
+    param_bytes = n_params * dtype_bytes
+    grad_bytes = param_bytes
+    optim_bytes = n_params * 4 * 2  # Adam m, v always float32
+    act_bytes = param_bytes * 2  # rough: ~2x params for activations
+    return (param_bytes + grad_bytes + optim_bytes + act_bytes) / (1024**3)
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -61,6 +99,7 @@ D_MODEL = 384
 N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
+CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
@@ -165,7 +204,16 @@ class SSMBlock(nn.Module):
 
 
 class NanoSSM(nn.Module):
-    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96, block_type: str = "s4d"):
+    def __init__(
+        self,
+        task: str,
+        vocab_size: int = 256,
+        n_classes: int = 2,
+        n_features: int = 7,
+        pred_len: int = 96,
+        block_type: str = "s4d",
+        chunk_size: int = 64,
+    ):
         super().__init__()
         self.task = task
         self.block_type = block_type
@@ -183,7 +231,7 @@ class NanoSSM(nn.Module):
         if block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM) for _ in range(N_LAYERS)]
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size) for _ in range(N_LAYERS)]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
@@ -298,8 +346,9 @@ def main():
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
+    parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE, help="SSD chunk size Q (default 64, smaller = less GPU pressure)")
     parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
-    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32", help="Model precision (bfloat16 recommended)")
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
     parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
     args = parser.parse_args()
 
@@ -325,21 +374,21 @@ def main():
     if task == "lm":
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
-        model = NanoSSM("lm", block_type=block_type)
+        model = NanoSSM("lm", block_type=block_type, chunk_size=args.chunk_size)
     elif task == "lm-tok":
         train_data = load_fineweb("train")
         val_data = load_fineweb("val")
         vocab_size = get_fineweb_vocab_size()
-        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type)
+        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type, chunk_size=args.chunk_size)
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
-        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type)
+        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type, chunk_size=args.chunk_size)
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
         val_data = load_ett("val", ETT_VARIANT)
         n_features = train_data.shape[1]
-        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type)
+        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type, chunk_size=args.chunk_size)
 
     # materialize parameters
     mx.eval(model.parameters())
@@ -355,6 +404,15 @@ def main():
         model._grad_checkpoint = True
 
     n_params = count_params(model)
+
+    # hardware info + memory warning
+    hw = detect_hardware()
+    dtype_bytes = 2 if args.dtype != "float32" else 4
+    est_gb = estimate_training_memory_gb(n_params, dtype_bytes)
+    if est_gb > hw["memory_gb"] * 0.8:
+        print(f"WARNING: estimated {est_gb:.1f}GB training memory may exceed {hw['memory_gb']:.0f}GB ({hw['name']})")
+        print("  Try: --size smaller, --grad-checkpoint, or reduce --batch")
+
     flags = []
     if args.dtype != "float32":
         flags.append(args.dtype)
@@ -364,6 +422,7 @@ def main():
         flags.append("grad-ckpt")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
+    print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory")
 
     # Cosine decay with linear warmup
     warmup_steps = min(100, max_steps // 10)
@@ -415,6 +474,7 @@ def main():
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
             "block_type": block_type,
+            "chunk_size": args.chunk_size,
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size
