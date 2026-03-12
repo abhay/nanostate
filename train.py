@@ -280,6 +280,7 @@ class NanoSSM(nn.Module):
         attn_layers: list = None,
         attn_type: str = "full",
         attn_window: int = None,
+        use_metal: bool = False,
     ):
         super().__init__()
         self.task = task
@@ -306,11 +307,11 @@ class NanoSSM(nn.Module):
                 if i in attn_set:
                     self.blocks.append(AttentionBlock(D_MODEL, window=window))
                 else:
-                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size))
+                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size, use_metal=use_metal))
         elif block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size) for _ in range(N_LAYERS)]
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
@@ -435,6 +436,7 @@ def main():
     parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
     parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
+    parser.add_argument("--metal", action="store_true", help="Use fused Metal kernels for SSD (experimental)")
     parser.add_argument(
         "--attn-layers",
         default=None,
@@ -505,6 +507,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
+            use_metal=args.metal,
         )
     elif task == "lm-tok":
         train_data = load_fineweb("train")
@@ -518,6 +521,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
+            use_metal=args.metal,
         )
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
@@ -530,6 +534,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
+            use_metal=args.metal,
         )
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
@@ -544,6 +549,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
+            use_metal=args.metal,
         )
 
     # materialize parameters
@@ -576,6 +582,8 @@ def main():
         flags.append("compiled")
     if args.grad_checkpoint:
         flags.append("grad-ckpt")
+    if args.metal:
+        flags.append("metal")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
     print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
     print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory")
