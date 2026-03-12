@@ -14,9 +14,9 @@ The tradeoff is real: a fixed-size state can't do arbitrary lookback the way att
 
 ## The idea
 
-Start with a minimal state space model. Diagonal S4D, random init, gated blocks. ~100 lines for the core. You can hold the whole thing in your head.
+Start with a minimal state space model. Diagonal S4D, random init, gated blocks. ~100 lines for the core SSM layer and gated block. You can hold the whole thing in your head.
 
-Then make it better.
+Then make it better. The core has since grown to include Mamba-2 SSD (selectivity) and hybrid SSM+Attention, but the S4D starting point is still ~80 lines in `train.py`.
 
 **The starting point:**
 - Diagonal State Space layers (S4D)
@@ -120,11 +120,13 @@ uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
 
-Or reproduce the current best result in one shot:
+Or reproduce the S4D baseline in one shot:
 
 ```bash
-bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max
+bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max (byte-level S4D)
 ```
+
+For best quality, use SSD (`--block ssd`) — see [Block types](#block-types).
 
 ## Model sizes
 
