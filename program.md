@@ -55,8 +55,10 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 - `--dtype bfloat16` (default): Halves memory bandwidth. Works on all Apple Silicon. The 50K vocab projection dominates lm-tok and benefits most from reduced precision.
 - Do NOT use `--dtype float16` — it goes NaN without loss scaling. **Especially bad with SSD: exp overflow in segsum causes immediate NaN.** Use `--dtype float32` if you need full precision for debugging.
 - `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
-- `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
-- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
+- `--metal-eval`: Uses fused Metal kernels during eval passes (~20% faster evals). Forward-only optimization — training always uses pure MLX (autodiff builds the gradient graph during forward, backward is free). Only applies to `--block ssd` and `--block hybrid`.
+- `--grad-accum N`: Gradient accumulation over N microbatches. Effective batch = batch × N with less peak memory. Incompatible with `--compile` (dynamic loop). Use when memory-limited at larger seq_len or batch sizes.
+- `--chunk-size Q`: SSD chunk size (default 64, auto-tuned to 32 for seq_len≥512). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks fit better in Apple Silicon's cache hierarchy — especially important at seq512 where training is bandwidth-limited. Also settable via `NS_CHUNK_SIZE` env var.
+- All flags are composable: `--block ssd --compile --metal-eval --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
 
 **Two language modeling modes:**
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
@@ -197,15 +199,16 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 **Speed & precision:**
 - All performance flags are implemented as CLI args — see "Performance flags" in Experimentation above.
 - **Recommended for lm-tok**: `--compile` on every run. Add `--grad-checkpoint` for `--size medium` or larger.
-- **Recommended for SSD + lm-tok**: `--compile` on every run (19% faster, no quality loss). Add `--chunk-size 32` if you hit Metal GPU watchdog crashes.
+- **Recommended for SSD + lm-tok**: `--compile --metal-eval` on every run. Compile gives 19% faster training, metal-eval gives ~20% faster evals. Add `--chunk-size 32` if you hit Metal GPU watchdog crashes (auto-applied at seq512).
 - **bfloat16 with SSD**: Works but costs ~0.07 bpb quality (7.620 vs 7.548). Acceptable for quick iteration, use float32 for final runs.
+- **Bandwidth-limited at seq512**: At seq_len=512, SSD training is memory-bandwidth-limited on Apple Silicon (larger tensors saturate memory bus before compute). This means: smaller chunks help (fit in cache → auto Q=32), fewer kernel launches help (use `--compile`), and `--metal-eval` saves time on eval passes. `--grad-accum` can simulate larger batch without extra memory.
 - Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
 **Optimizer & training:**
 - Learning rate warmup ratio: current warmup is min(100, steps/10). For longer runs (5K+), the warmup ratio matters — experiment with 1-5% warmup.
 - Cosine decay min LR: currently decays to 1e-5. For longer runs, the final LR matters more.
-- Gradient accumulation: simulate larger effective batch size without more memory. Accumulate gradients over N steps before updating.
+- Gradient accumulation: **implemented** as `--grad-accum N`. Splits batch into N microbatches, averages gradients. Effective batch = batch × N. Note: incompatible with `--compile`.
 - Weight decay hurts on lm-tok (mar12 tested AdamW weight_decay=0.1: 7.778 vs 7.760 baseline). Don't retry.
 - Model scaling: use `--size medium` or `--size large` to test bigger models. If an idea works at `small`, validate at `medium` to check scaling.
 
