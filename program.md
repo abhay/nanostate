@@ -41,9 +41,14 @@ To set up a new experiment run:
 
 Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task lm-tok` or `--task dna` or `--task ts`).
 
-**Two block types:**
+**Three block types:**
 - `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
 - `--block ssd`: Mamba-2 SSD with chunked matmul. Input-dependent A/B/C (selective). Slower per step but breaks the LTI ceiling. **Use this for lm-tok experiments** — S4D L=4 and L=6 converge to the same val_bpb, SSD does not.
+- `--block hybrid`: Mix SSD layers with attention layers. Uses `--attn-layers` to specify which layer positions get attention (default: middle layer). Supports `--attn-type {full, sliding}` and `--attn-window`. Attention heads are auto-derived (d_model // 64). The Mamba-2 paper shows 10% attention is optimal -- with L=4, that's 1 attention layer.
+  - Example: `--block hybrid --attn-layers 2` (attention at layer 2, SSD everywhere else)
+  - Example: `--block hybrid --attn-layers 1,3 --attn-type sliding --attn-window 64`
+  - Note: attention heads (n_heads = d_model // 64) may become configurable in future
+  - Suggested experiments: try attention at different layer positions (0 vs 1 vs 2 vs 3)
 
 **Performance flags (use these!):**
 - `--compile`: Fuses element-wise ops via `mx.compile`. Adds ~2-3s JIT overhead on first step, then faster steady-state. Use on all runs longer than 100 steps.
@@ -51,7 +56,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 - Do NOT use `--dtype float16` — it goes NaN without loss scaling. Use `--dtype float32` if you need full precision for debugging.
 - `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
 - `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
-- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`
+- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
 
 **Two language modeling modes:**
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
@@ -182,7 +187,7 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - **seq_len=512 or 1024 on lm-tok**: Hurt on lm (overfitting), but lm-tok doesn't overfit. Longer sequences let the SSM use its long-range memory advantage.
 
 **Architecture:**
-- Hybrid: mix SSM layers with 1-2 attention layers. Active research area (Jamba, Zamba).
+- Hybrid: **implemented** as `--block hybrid`. Mix SSD layers with attention layers. See block types above.
 - Different MLP designs (SwiGLU).
 
 **Discretization:**

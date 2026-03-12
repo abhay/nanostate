@@ -115,6 +115,22 @@ DNA_TASK = "promoter_no_tata"
 ETT_VARIANT = "ETTh1"
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_attn_layers(s, n_layers):
+    """Parse comma-separated layer indices for attention placement."""
+    indices = set()
+    for part in s.split(","):
+        idx = int(part.strip())
+        if idx < 0 or idx >= n_layers:
+            raise ValueError(f"--attn-layers index {idx} out of range [0, {n_layers})")
+        indices.add(idx)
+    return indices
+
+
+# ---------------------------------------------------------------------------
 # S4D Layer (real diagonal, convolutional mode)
 # ---------------------------------------------------------------------------
 
@@ -213,6 +229,9 @@ class NanoSSM(nn.Module):
         pred_len: int = 96,
         block_type: str = "s4d",
         chunk_size: int = 64,
+        attn_layers: list = None,
+        attn_type: str = "full",
+        attn_window: int = None,
     ):
         super().__init__()
         self.task = task
@@ -228,7 +247,19 @@ class NanoSSM(nn.Module):
             self.embed = nn.Linear(n_features, D_MODEL)
 
         # shared backbone
-        if block_type == "ssd":
+        if block_type == "hybrid":
+            from attention import AttentionBlock
+            from ssd import SSDBlock
+
+            attn_set = set(attn_layers) if attn_layers else {N_LAYERS // 2}
+            window = attn_window if attn_type == "sliding" else None
+            self.blocks = []
+            for i in range(N_LAYERS):
+                if i in attn_set:
+                    self.blocks.append(AttentionBlock(D_MODEL, window=window))
+                else:
+                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size))
+        elif block_type == "ssd":
             from ssd import SSDBlock
 
             self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size) for _ in range(N_LAYERS)]
@@ -341,7 +372,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
     parser.add_argument("--size", choices=list(SIZE_PRESETS), default=None, help="Model size preset (overridden by NS_* env vars)")
-    parser.add_argument("--block", choices=["s4d", "ssd"], default="s4d", help="Block type: s4d (FFT conv) or ssd (Mamba-2 selective)")
+    parser.add_argument(
+        "--block",
+        choices=["s4d", "ssd", "hybrid"],
+        default="s4d",
+        help="Block type: s4d (FFT conv), ssd (Mamba-2), or hybrid (SSD+attention)",
+    )
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
@@ -350,7 +386,27 @@ def main():
     parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
     parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
+    parser.add_argument(
+        "--attn-layers",
+        default=None,
+        help="Comma-separated 0-indexed attention layer positions (default: middle)",
+    )
+    parser.add_argument(
+        "--attn-type",
+        choices=["full", "sliding"],
+        default="full",
+        help="Attention type for hybrid (default: full causal)",
+    )
+    parser.add_argument(
+        "--attn-window",
+        type=int,
+        default=None,
+        help="Sliding window size (requires --attn-type sliding)",
+    )
     args = parser.parse_args()
+
+    if args.attn_window is not None and args.attn_type != "sliding":
+        parser.error("--attn-window requires --attn-type sliding")
 
     # Resolve model dimensions: defaults < --size < NS_* env vars
     global D_MODEL, N_LAYERS, STATE_DIM
@@ -370,25 +426,63 @@ def main():
     max_steps = args.steps or int(os.environ.get("NS_STEPS", MAX_STEPS_DEFAULT.get(task, 1000)))
     lr = args.lr
 
+    attn_layers = None
+    if args.attn_layers:
+        attn_layers = list(parse_attn_layers(args.attn_layers, N_LAYERS))
+    elif block_type == "hybrid":
+        attn_layers = [N_LAYERS // 2]
+
     # --- data ---
     if task == "lm":
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
-        model = NanoSSM("lm", block_type=block_type, chunk_size=args.chunk_size)
+        model = NanoSSM(
+            "lm",
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+        )
     elif task == "lm-tok":
         train_data = load_fineweb("train")
         val_data = load_fineweb("val")
         vocab_size = get_fineweb_vocab_size()
-        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type, chunk_size=args.chunk_size)
+        model = NanoSSM(
+            "lm-tok",
+            vocab_size=vocab_size,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+        )
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
-        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type, chunk_size=args.chunk_size)
+        model = NanoSSM(
+            "dna",
+            n_classes=n_classes,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+        )
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
         val_data = load_ett("val", ETT_VARIANT)
         n_features = train_data.shape[1]
-        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type, chunk_size=args.chunk_size)
+        model = NanoSSM(
+            "ts",
+            n_features=n_features,
+            pred_len=PRED_LEN,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+        )
 
     # materialize parameters
     mx.eval(model.parameters())
@@ -478,6 +572,11 @@ def main():
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size
+        if attn_layers is not None:
+            config["attn_layers"] = attn_layers
+            config["attn_type"] = args.attn_type
+            if args.attn_window is not None:
+                config["attn_window"] = args.attn_window
         model.save_weights(os.path.join(path, "model.npz"))
         with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(config, f, indent=2)
