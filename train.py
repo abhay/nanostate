@@ -14,6 +14,11 @@ Model sizes (byte-level LM params):
   python train.py --size small    # d=384, L=4   (~4.3M params, default)
   python train.py --size medium   # d=768, L=6   (~23M params)
   python train.py --size large    # d=1024, L=12 (~81M params)
+
+Performance flags:
+  python train.py --compile                # fuse ops via mx.compile
+  python train.py --dtype bfloat16         # mixed precision (bfloat16 recommended)
+  python train.py --grad-checkpoint        # trade compute for memory
 """
 
 import argparse
@@ -164,6 +169,7 @@ class NanoSSM(nn.Module):
         super().__init__()
         self.task = task
         self.block_type = block_type
+        self._grad_checkpoint = False
 
         # embedding
         if task in ("lm", "lm-tok"):
@@ -194,7 +200,7 @@ class NanoSSM(nn.Module):
     def __call__(self, x):
         x = self.embed(x)
         for block in self.blocks:
-            x = block(x)
+            x = mx.checkpoint(block)(x) if self._grad_checkpoint else block(x)
         x = self.norm(x)
 
         if self.task in ("lm", "lm-tok"):
@@ -292,6 +298,9 @@ def main():
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
+    parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32", help="Model precision (bfloat16 recommended)")
+    parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
     args = parser.parse_args()
 
     # Resolve model dimensions: defaults < --size < NS_* env vars
@@ -334,8 +343,27 @@ def main():
 
     # materialize parameters
     mx.eval(model.parameters())
+
+    # mixed precision
+    if args.dtype != "float32":
+        dtype = mx.float16 if args.dtype == "float16" else mx.bfloat16
+        model.set_dtype(dtype)
+        mx.eval(model.parameters())
+
+    # gradient checkpointing
+    if args.grad_checkpoint:
+        model._grad_checkpoint = True
+
     n_params = count_params(model)
-    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
+    flags = []
+    if args.dtype != "float32":
+        flags.append(args.dtype)
+    if args.compile:
+        flags.append("compiled")
+    if args.grad_checkpoint:
+        flags.append("grad-ckpt")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
 
     # Cosine decay with linear warmup
     warmup_steps = min(100, max_steps // 10)
@@ -349,6 +377,17 @@ def main():
     optimizer = optim.Adam(learning_rate=lr_schedule)
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
+
+    # training step (optionally compiled)
+    state = [model.state, optimizer.state]
+
+    def train_step(x, y):
+        loss, grads = loss_and_grad(model, x, y)
+        optimizer.update(model, grads)
+        return loss
+
+    if args.compile:
+        train_step = mx.compile(train_step, inputs=state, outputs=state)
 
     # --- logging ---
     os.makedirs("logs", exist_ok=True)
@@ -399,9 +438,8 @@ def main():
             xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
             x, y = mx.array(xnp), mx.array(ynp)
 
-        train_loss, grads = loss_and_grad(model, x, y)
-        optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state, train_loss)
+        train_loss = train_step(x, y)
+        mx.eval(state, train_loss)
 
         step_ms = (time.time() - ts) * 1000
 
