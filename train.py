@@ -69,6 +69,54 @@ def detect_hardware():
     }
 
 
+def auto_config(hw):
+    """Suggest training defaults based on detected hardware.
+
+    Returns a dict of suggested values. CLI args and NS_* env vars
+    always override these — auto_config just picks smarter defaults
+    than the hardcoded ones.
+    """
+    mem = hw["memory_gb"]
+
+    # Size: fit the biggest model that leaves headroom
+    if mem >= 128:
+        size = "large"
+    elif mem >= 48:
+        size = "medium"
+    elif mem >= 16:
+        size = "small"
+    else:
+        size = "tiny"
+
+    # Batch: scale with memory, cap at 64
+    if mem >= 64:
+        batch = 64
+    elif mem >= 32:
+        batch = 48
+    elif mem >= 16:
+        batch = 32
+    else:
+        batch = 16
+
+    # Chunk size: larger memory can handle bigger chunks
+    if mem >= 32:
+        chunk_size = 128
+    elif mem >= 16:
+        chunk_size = 64
+    else:
+        chunk_size = 32
+
+    # Grad checkpoint: suggest for tight memory
+    grad_checkpoint = mem < 16
+
+    return {
+        "size": size,
+        "batch": batch,
+        "chunk_size": chunk_size,
+        "grad_checkpoint": grad_checkpoint,
+    }
+
+
 def estimate_training_memory_gb(n_params, dtype_bytes=4):
     """Rough estimate of peak training memory.
 
@@ -371,6 +419,7 @@ def count_params(model):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
+    parser.add_argument("--auto", action="store_true", help="Auto-configure size, batch, chunk-size based on hardware")
     parser.add_argument("--size", choices=list(SIZE_PRESETS), default=None, help="Model size preset (overridden by NS_* env vars)")
     parser.add_argument(
         "--block",
@@ -407,6 +456,19 @@ def main():
 
     if args.attn_window is not None and args.attn_type != "sliding":
         parser.error("--attn-window requires --attn-type sliding")
+
+    # Auto-configure: detect hardware, suggest defaults (explicit flags override)
+    hw = detect_hardware()
+    if args.auto:
+        ac = auto_config(hw)
+        if args.size is None and "NS_D_MODEL" not in os.environ:
+            args.size = ac["size"]
+        if args.batch == BATCH_SIZE and "NS_BATCH_SIZE" not in os.environ:
+            args.batch = ac["batch"]
+        if args.chunk_size == CHUNK_SIZE and "NS_CHUNK_SIZE" not in os.environ:
+            args.chunk_size = ac["chunk_size"]
+        if not args.grad_checkpoint:
+            args.grad_checkpoint = ac["grad_checkpoint"]
 
     # Resolve model dimensions: defaults < --size < NS_* env vars
     global D_MODEL, N_LAYERS, STATE_DIM
