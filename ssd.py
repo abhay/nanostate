@@ -49,7 +49,8 @@ def ssd_forward(X, A, B, C, block_len=64, use_metal=False):
         B: (batch, length, n_heads, d_state)  -- input projection
         C: (batch, length, n_heads, d_state)  -- output projection
         block_len: chunk size Q (default 64)
-        use_metal: use fused Metal kernels for Step 1 (default False)
+        use_metal: use fused Metal kernels for Step 1 (inference/eval only,
+            not differentiable — do not use during training)
 
     Returns:
         Y: (batch, length, n_heads, d_head)   -- output

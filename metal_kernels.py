@@ -1,15 +1,19 @@
-"""Fused Metal kernels for SSD acceleration.
+"""Fused Metal kernels for SSD acceleration (forward-only, not differentiable).
 
 Uses mx.fast.metal_kernel() to fuse multi-step operations into single
 GPU dispatches, keeping intermediates in registers/threadgroup memory.
+
+These kernels are an INFERENCE/EVAL optimization, not a training optimization.
+During training, MLX autodiff builds the gradient graph during the forward pass,
+making backward effectively free (graph reuse). Wrapping Metal kernels in
+@mx.custom_function forces the VJP to retrace forward through MLX, doubling
+the forward cost. Pure MLX is faster for training.
 
 Kernel 1: segsum_exp — fuses cumsum + outer diff + tril mask + exp
 Kernel 2: ssd_intra_chunk — fuses segsum_exp + CB^T gram + masked matmul
   Two variants: scalar (any Q <= 128) and simdgroup (Q <= 64, dims % 8 == 0).
   Simdgroup variant uses simdgroup_matrix_multiply_accumulate for both matmuls,
   achieving 10-20% speedup over MLX's separate einsum calls at medium+ sizes.
-Kernel 3: ssd_intra_chunk_backward — Metal backward for dA
-  Gradient of intra-chunk output w.r.t. log-decay A via fused kernel.
 """
 
 import mlx.core as mx
@@ -364,100 +368,14 @@ def _ssd_intra_chunk_raw(A, B, C, X):
     return _ssd_intra_chunk_scalar(A, B, C, X)
 
 
-def _ssd_intra_chunk_mlx(A, B, C, X):
-    """Pure MLX path (supports autodiff)."""
-    from ssd import segsum
-
-    L_mask = mx.exp(segsum(A))
-    CB = mx.einsum("bclhn,bcshn->bhcls", C, B)
-    return mx.einsum("bhcls,bcshp->bclhp", L_mask * CB, X)
-
-
-# ---------------------------------------------------------------------------
-# Kernel 3: backward kernel for dA (gradient of A through intra-chunk)
-# ---------------------------------------------------------------------------
-
-_ssd_backward_dA_kernel = mx.fast.metal_kernel(
-    name="ssd_backward_dA",
-    input_names=["A", "B", "C", "X", "dY", "dims"],
-    output_names=["dA"],
-    source="""
-        // Compute dA[b, h, c, k] = sum over (l,s) where s < k <= l of:
-        //   dY[b,c,l,h,:] . { exp(cum_l - cum_s) * CB[l,s] * X[b,c,s,h,:] }
-        //
-        // Grid: (Q, nC, Bsz * H)
-
-        uint k = thread_position_in_grid.x;
-        uint c = thread_position_in_grid.y;
-        uint bh = thread_position_in_grid.z;
-
-        uint Q_val = (uint)dims[0];
-        uint H = (uint)dims[1];
-        uint nC = (uint)dims[2];
-        uint P = (uint)dims[3];
-        uint N = (uint)dims[4];
-        uint Bsz = (uint)dims[5];
-
-        if (k >= Q_val) return;
-
-        uint b = bh / H;
-        uint h = bh % H;
-        if (b >= Bsz) return;
-
-        // Shared cumsum
-        threadgroup float shared_cumsum[128];
-        uint a_base = b * H * nC * Q_val + h * nC * Q_val + c * Q_val;
-        uint tid = thread_position_in_threadgroup.x;
-        if (tid == 0) {
-            float running = 0.0f;
-            for (uint i = 0; i < Q_val; i++) {
-                running += (float)A[a_base + i];
-                shared_cumsum[i] = running;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        float grad_a = 0.0f;
-        uint stride_b = nC * Q_val * H * N;
-        uint stride_x = nC * Q_val * H * P;
-
-        // Sum over all (l, s) pairs where s < k <= l
-        for (uint l = k; l < Q_val; l++) {
-            float cum_l = shared_cumsum[l];
-            uint c_off = b * stride_b + c * Q_val * H * N + l * H * N + h * N;
-            uint dy_base = b * stride_x + c * Q_val * H * P + l * H * P + h * P;
-
-            for (uint s = 0; s < k; s++) {
-                float cum_s = shared_cumsum[s];
-                float decay = metal::exp(cum_l - cum_s);
-
-                // CB[l,s] = dot(C[l], B[s])
-                uint b_off = b * stride_b + c * Q_val * H * N + s * H * N + h * N;
-                float cb = 0.0f;
-                for (uint n = 0; n < N; n++) {
-                    cb += (float)C[c_off + n] * (float)B[b_off + n];
-                }
-
-                // dot(dY[l,:], X[s,:])
-                uint x_base = b * stride_x + c * Q_val * H * P + s * H * P + h * P;
-                float dy_x = 0.0f;
-                for (uint p = 0; p < P; p++) {
-                    dy_x += (float)dY[dy_base + p] * (float)X[x_base + p];
-                }
-
-                grad_a += decay * cb * dy_x;
-            }
-        }
-
-        dA[a_base + k] = (T)grad_a;
-    """,
-    ensure_row_contiguous=True,
-)
-
-
-@mx.custom_function
 def ssd_intra_chunk_metal(A, B, C, X):
-    """Fused SSD Step 1: Metal forward, Metal+MLX backward.
+    """Fused SSD Step 1 via Metal kernels (forward-only, NOT differentiable).
+
+    This is an inference/eval optimization. During training, use the pure MLX
+    path in ssd.py instead — MLX autodiff builds the gradient graph during
+    forward, making backward effectively free. Wrapping Metal in
+    @mx.custom_function would force VJP to retrace forward, adding ~4-5%
+    overhead vs pure MLX.
 
     A: (Bsz, H, nC, Q) — log-decay values (already transposed)
     B: (Bsz, nC, Q, H, N) — input projection
@@ -468,16 +386,6 @@ def ssd_intra_chunk_metal(A, B, C, X):
         Y_diag: (Bsz, nC, Q, H, P) — intra-chunk output
     """
     return _ssd_intra_chunk_raw(A, B, C, X)
-
-
-@ssd_intra_chunk_metal.vjp
-def ssd_intra_chunk_vjp(primals, cotangents, outputs):
-    """Backward: MLX autodiff for all gradients."""
-    A, B, C, X = primals
-    dY = cotangents
-
-    _, grads = mx.vjp(_ssd_intra_chunk_mlx, [A, B, C, X], [dY])
-    return tuple(grads)
 
 
 # ---------------------------------------------------------------------------

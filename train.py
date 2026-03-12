@@ -436,7 +436,7 @@ def main():
     parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
     parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
-    parser.add_argument("--metal", action="store_true", help="Use fused Metal kernels for SSD (experimental)")
+    parser.add_argument("--metal", action="store_true", help="(ignored, kept for compat) Metal kernels are inference-only")
     parser.add_argument(
         "--attn-layers",
         default=None,
@@ -507,7 +507,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
-            use_metal=args.metal,
+            use_metal=False,
         )
     elif task == "lm-tok":
         train_data = load_fineweb("train")
@@ -521,7 +521,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
-            use_metal=args.metal,
+            use_metal=False,
         )
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
@@ -534,7 +534,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
-            use_metal=args.metal,
+            use_metal=False,
         )
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
@@ -549,7 +549,7 @@ def main():
             attn_layers=attn_layers,
             attn_type=args.attn_type,
             attn_window=args.attn_window,
-            use_metal=args.metal,
+            use_metal=False,
         )
 
     # materialize parameters
