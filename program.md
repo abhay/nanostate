@@ -53,7 +53,7 @@ Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python 
 **Performance flags (use these!):**
 - `--compile`: Fuses element-wise ops via `mx.compile`. Adds ~2-3s JIT overhead on first step, then faster steady-state. Use on all runs longer than 100 steps.
 - `--dtype bfloat16` (default): Halves memory bandwidth. Works on all Apple Silicon. The 50K vocab projection dominates lm-tok and benefits most from reduced precision.
-- Do NOT use `--dtype float16` — it goes NaN without loss scaling. Use `--dtype float32` if you need full precision for debugging.
+- Do NOT use `--dtype float16` — it goes NaN without loss scaling. **Especially bad with SSD: exp overflow in segsum causes immediate NaN.** Use `--dtype float32` if you need full precision for debugging.
 - `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
 - `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
 - All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
@@ -157,7 +157,7 @@ LOOP FOREVER:
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
-**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok` with S4D, expect ~1.5s/step — so 1000 steps ≈ 25 min, 3000 steps ≈ 75 min. For `lm-tok` with SSD (`--block ssd`), expect ~9-10s/step — so 1000 steps ≈ 170 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
+**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok` with S4D, expect ~0.4s/step with `--compile` — so 1000 steps ≈ 8 min, 3000 steps ≈ 25 min. For `lm-tok` with SSD (`--block ssd --compile`), expect ~0.45s/step at seq256, ~3.4s/step at seq512 — so 1000 steps at seq512 ≈ 60 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
@@ -176,15 +176,15 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - SSD allows larger state dim (64-256) with no speed penalty. Mamba-1 was limited to N=16.
 - Reference implementation is ~35 lines of PyTorch. See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for full details.
 - Paper: "Transformers are SSMs" (Dao & Gu, 2024) https://arxiv.org/abs/2405.21060
-- **SSD is implemented.** Use `--block ssd` to enable it. The implementation is in `ssd.py`. Early A/B on byte-level LM: SSD train loss much lower (1.064 vs 1.272) but similar val_bpb. lm-tok is where it should shine — that's where the LTI ceiling blocks S4D.
-- **SSD is ~67% slower per step** than S4D due to chunked matmul overhead. Prioritize mx.compile and mixed precision to close the speed gap.
+- **SSD is implemented.** Use `--block ssd` to enable it. The implementation is in `ssd.py`. Comparison at same param count (small, 1000 steps, `--compile`): SSD 7.884 vs S4D 8.199 val_bpb on lm-tok. SSD also broke the LTI ceiling at 3000 steps (7.338 vs S4D's 7.474). SSD is the best block type for lm-tok.
+- **SSD is ~14% slower per step** than S4D with `--compile` (456 vs 401 ms/step at small/seq256). Use `--compile` on all SSD runs.
 
 **Quick wins to try on lm-tok:**
 - **C init scale**: Currently 0.01 × randn — very small. Try 0.1 or 1.0 so the SSM output has more influence early in training.
 - **Softplus for dt** instead of exp: Mamba uses softplus(linear(x)). Different gradient profile — clips dt gradients to [0,1], potentially more stable.
 - **RMSNorm** instead of LayerNorm: Mamba-2 uses RMSNorm. Simpler (no mean subtraction), slightly faster.
 - **Conv1d before SSM on lm-tok**: Failed on lm (overfitting), but lm-tok has 10,000x more data. Worth retrying.
-- **seq_len=512 or 1024 on lm-tok**: Hurt on lm (overfitting), but lm-tok doesn't overfit. Longer sequences let the SSM use its long-range memory advantage.
+- ~~**seq_len=512 on lm-tok**~~: **Validated.** SSD + seq512 = 7.548 vs seq256 = 7.826 at 1000 steps. Use `--seq-len 512` for SSD lm-tok runs. (seq_len=1024 not yet tested.)
 
 **Architecture:**
 - Hybrid: **implemented** as `--block hybrid`. Mix SSD layers with attention layers. See block types above.
@@ -197,7 +197,8 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 **Speed & precision:**
 - All performance flags are implemented as CLI args — see "Performance flags" in Experimentation above.
 - **Recommended for lm-tok**: `--compile` on every run. Add `--grad-checkpoint` for `--size medium` or larger.
-- **Recommended for SSD + lm-tok**: `--compile --chunk-size 32` (smaller chunks avoid Metal GPU watchdog crashes).
+- **Recommended for SSD + lm-tok**: `--compile` on every run (19% faster, no quality loss). Add `--chunk-size 32` if you hit Metal GPU watchdog crashes.
+- **bfloat16 with SSD**: Works but costs ~0.07 bpb quality (7.620 vs 7.548). Acceptable for quick iteration, use float32 for final runs.
 - Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
