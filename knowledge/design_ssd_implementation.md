@@ -250,27 +250,19 @@ def auto_config(task, hardware=None):
     return {"size": size, "dtype": dtype, "chunk_size": chunk_size}
 ```
 
-### Phase D: Fused Metal Kernels (optimization)
+### Phase D: Fused Metal Kernels (implemented — inference-only)
 
-After pure MLX works, fuse for speed:
+Implemented in `metal_kernels.py`. Key finding: **Metal kernels are an inference/eval optimization, not a training optimization.** During training, MLX autodiff builds the gradient graph during forward — backward is "free" (graph reuse). Wrapping Metal in `@mx.custom_function` forces the VJP to retrace forward, adding ~4-5% overhead. Training uses pure MLX.
 
-1. **Fuse segsum + matmul** — the L matrix computation + step 1 matmul
-2. **Fuse entire SSD forward** — keep chunk state in threadgroup memory
-3. **FP16 matmul with FP32 accumulation** — `mx.fast.metal_kernel()`
+Two kernel variants for SSD step 1 (intra-chunk):
+1. **Scalar kernel** — any Q≤128, per-thread cumsum + serial CB·X accumulation
+2. **Simdgroup kernel** — Q≤64 with dims%8==0, uses `simdgroup_matrix_multiply_accumulate` for both CB gram and Y matmul. ~20% faster forward than MLX einsum.
 
-```python
-# Example: fused segsum kernel via mx.fast.metal_kernel
-ssd_step1_kernel = mx.fast.metal_kernel(
-    name="ssd_intra_chunk",
-    input_names=["A", "B", "C", "X"],
-    output_names=["Y_diag"],
-    source="""
-        // Compute L = exp(segsum(A)) and Y_diag = (L . CB^T) X
-        // All in threadgroup shared memory, no global memory writes for intermediates
-        ...
-    """,
-)
-```
+Key implementation details:
+- `#include <metal_simdgroup_matrix>` via `header=` param in `mx.fast.metal_kernel()`
+- bf16 inputs batch-cast to fp32 in Python (coalesced loads, faster than per-element in kernel)
+- `threadgroup_barrier` required for cross-simdgroup sync (not `simdgroup_barrier`)
+- Max 1024 threads/threadgroup, 32KB threadgroup memory on M1
 
 ## Migration Strategy
 
