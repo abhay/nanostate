@@ -14,9 +14,9 @@ The tradeoff is real: a fixed-size state can't do arbitrary lookback the way att
 
 ## The idea
 
-Start with a minimal state space model. Diagonal S4D, random init, gated blocks. ~100 lines for the core. You can hold the whole thing in your head.
+Start with a minimal state space model. Diagonal S4D, random init, gated blocks. ~100 lines for the core SSM layer and gated block. You can hold the whole thing in your head.
 
-Then make it better.
+Then make it better. The core has since grown to include Mamba-2 SSD (selectivity) and hybrid SSM+Attention, but the S4D starting point is still ~80 lines in `train.py`.
 
 **The starting point:**
 - Diagonal State Space layers (S4D)
@@ -41,7 +41,19 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 7 | 2.1838 | 4.3M | HiPPO-LegS initialization | `ea2016b` |
 | 8 | **2.1745** | **4.3M** | **lr=7e-4** | `6a6c03f` |
 
-*37 experiments across two autoresearch runs ([details](#all-experiments)).*
+*58 experiments across four autoresearch runs ([details](#all-experiments)).*
+
+### Token-level LM (FineWebEdu BPE)
+
+The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the LTI ceiling where S4D stalls.
+
+| # | val_bpb | Params | Key change | Commit |
+|---|---------|--------|------------|--------|
+| 1 | 8.0317 | 42.8M | S4D baseline (d=384, L=4, 1000 steps) | `6a6c03f` |
+| 2 | 7.7959 | 42.8M | conv1d + SiLU before SSM | `252c4d3` |
+| 3 | 7.4744 | 42.8M | S4D 3000 steps (LTI ceiling) | `6a6c03f` |
+| 4 | 7.5478 | 42.6M | SSD + seq512 (1000 steps) | `cd360d3` |
+| 5 | **7.3381** | **42.6M** | **SSD + seq512 + 3000 steps** | `cd360d3` |
 
 <details>
 <summary><a id="all-experiments"></a>All experiments (including discards)</summary>
@@ -75,6 +87,10 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 2.1745 | 4.3M | keep | lr=7e-4 | `6a6c03f` |
 | 2.1776 | 4.3M | discard | lr=8e-4 | `ea2016b` |
 | 2.1884 | 4.3M | discard | lr=1e-3 | `ea2016b` |
+| 2.225 | 4.4M | discard | conv1d + SiLU before SSM (overfits on lm) | `252c4d3` |
+| 2.537 | 42.8M | discard | selective scan N=16 L=64 (Metal watchdog) | `309f3c4` |
+| 2.227 | 4.3M | discard | softplus for dt (no improvement) | `309f3c4` |
+| 2.178 | 4.3M | keep | RMSNorm (equal to LayerNorm, simpler) | `309f3c4` |
 
 **lm-tok (FineWebEdu BPE, 50K vocab)**
 
@@ -89,6 +105,21 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 7.5317 | 23.4M | discard | weight tying + 3000 steps | `77b9f30` |
 | 7.4754 | 44.9M | discard | L=6, 3000 steps (same as L=4) | `342c455` |
 | 7.5124 | 42.8M | discard | lr=1e-3, 3000 steps | `342c455` |
+| 7.7959 | 42.8M | keep | conv1d + SiLU before SSM | `252c4d3` |
+| 8.036 | 42.8M | keep | mar12 baseline 1000 steps | `309f3c4` |
+| 8.041 | 42.8M | discard | C init 0.1 (no help) | `309f3c4` |
+| 7.760 | 42.8M | keep | seq_len=512 | `309f3c4` |
+| 7.778 | 42.8M | discard | AdamW wd=0.1 + seq512 | `f2a4286` |
+| 7.826 | 42.8M | discard | RMSNorm + seq512 (slightly worse than LayerNorm) | `309f3c4` |
+| 7.8263 | 42.6M | keep | SSD baseline (--block ssd) | `cd360d3` |
+| 7.5478 | 42.6M | keep | SSD + seq512 | `cd360d3` |
+| 7.5342 | 44.6M | discard | SSD L=6 + seq512 (marginal, 2.2x slower) | `cd360d3` |
+| **7.3381** | **42.6M** | **keep** | **SSD 3000 steps + seq512 (breaks LTI ceiling)** | `cd360d3` |
+| 7.5194 | 42.6M | keep | SSD + mx.compile (19% faster, same quality) | `cd360d3` |
+| nan | 42.6M | discard | SSD + float16 (NaN — segsum exp overflow) | `cd360d3` |
+| 7.6204 | 42.6M | discard | SSD + bfloat16 (+0.07 bpb quality loss) | `cd360d3` |
+| 7.5606 | 43.0M | discard | SSD + d_state=128 (no gain over 64) | `cd360d3` |
+| 7.5695 | 42.6M | discard | SSD + lr=1e-3 (similar to 7e-4) | `cd360d3` |
 
 </details>
 
@@ -120,11 +151,13 @@ uv run python train.py --task dna       # DNA classification
 uv run python train.py --task ts        # time series forecasting
 ```
 
-Or reproduce the current best result in one shot:
+Or reproduce the S4D baseline in one shot:
 
 ```bash
-bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max
+bash runs/speedrun.sh    # ~2.17 val_bpb in 84s on M1 Max (byte-level S4D)
 ```
+
+For best quality, use SSD (`--block ssd`) — see [Block types](#block-types).
 
 ## Model sizes
 
@@ -150,6 +183,28 @@ uv run python train.py --block hybrid --attn-layers 2  # SSD + attention (10% at
 ```
 
 S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. Hybrid adds a few attention layers to SSD for arbitrary lookback -- the Mamba-2 paper shows 10% attention is optimal. All block types use the same `--size` presets and tooling (generation, visualization, benchmarks).
+
+### Block type comparison
+
+Same param count, same settings, `--compile`. Run with `python compare.py`.
+
+**Byte-level LM** (TinyShakespeare, tiny, 200 steps):
+
+| Block | val_bpb | Params | ms/step |
+|-------|---------|--------|---------|
+| **SSD** | **2.545** | 604K | 42 |
+| hybrid | 2.699 | 536K | 36 |
+| S4D | 2.927 | 662K | 22 |
+
+**Token-level LM** (FineWebEdu BPE, small, 1000 steps):
+
+| Block | val_bpb | Params | ms/step |
+|-------|---------|--------|---------|
+| **SSD** | **7.884** | 42.6M | 456 |
+| S4D | 8.199 | 42.8M | 401 |
+| hybrid | 8.211 | 42.2M | 437 |
+
+SSD's selectivity (input-dependent A, B, C) consistently outperforms S4D's fixed convolution kernel. The LTI ceiling is real: S4D at L=4 and L=6 converge to the same val_bpb, while SSD breaks through. Hybrid hasn't shown gains yet at these training durations.
 
 ## Performance flags
 
