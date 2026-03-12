@@ -14,6 +14,11 @@ Model sizes (byte-level LM params):
   python train.py --size small    # d=384, L=4   (~4.3M params, default)
   python train.py --size medium   # d=768, L=6   (~23M params)
   python train.py --size large    # d=1024, L=12 (~81M params)
+
+Performance flags:
+  python train.py --compile                # fuse ops via mx.compile
+  python train.py --dtype float32           # full precision (bfloat16 is default)
+  python train.py --grad-checkpoint        # trade compute for memory
 """
 
 import argparse
@@ -39,6 +44,44 @@ from data import (
 )
 
 # ---------------------------------------------------------------------------
+# Hardware detection
+# ---------------------------------------------------------------------------
+
+
+def detect_hardware():
+    """Detect Apple Silicon chip and capabilities."""
+    info = mx.device_info()
+    name = info.get("device_name", "Unknown")
+    memory_bytes = info.get("memory_size", 0)
+    memory_gb = memory_bytes / (1024**3)
+
+    # Chip generation from device name (M1=1, M2=2, ..., M5=5)
+    gen = 1
+    for g in range(9, 0, -1):
+        if f"M{g}" in name:
+            gen = g
+            break
+
+    return {
+        "name": name,
+        "memory_gb": memory_gb,
+        "generation": gen,
+    }
+
+
+def estimate_training_memory_gb(n_params, dtype_bytes=4):
+    """Rough estimate of peak training memory.
+
+    params + grads + optimizer state (Adam m,v in fp32) + activations.
+    """
+    param_bytes = n_params * dtype_bytes
+    grad_bytes = param_bytes
+    optim_bytes = n_params * 4 * 2  # Adam m, v always float32
+    act_bytes = param_bytes * 2  # rough: ~2x params for activations
+    return (param_bytes + grad_bytes + optim_bytes + act_bytes) / (1024**3)
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -56,6 +99,7 @@ D_MODEL = 384
 N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
+CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
@@ -160,10 +204,20 @@ class SSMBlock(nn.Module):
 
 
 class NanoSSM(nn.Module):
-    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96, block_type: str = "s4d"):
+    def __init__(
+        self,
+        task: str,
+        vocab_size: int = 256,
+        n_classes: int = 2,
+        n_features: int = 7,
+        pred_len: int = 96,
+        block_type: str = "s4d",
+        chunk_size: int = 64,
+    ):
         super().__init__()
         self.task = task
         self.block_type = block_type
+        self._grad_checkpoint = False
 
         # embedding
         if task in ("lm", "lm-tok"):
@@ -177,7 +231,7 @@ class NanoSSM(nn.Module):
         if block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM) for _ in range(N_LAYERS)]
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size) for _ in range(N_LAYERS)]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
@@ -194,7 +248,7 @@ class NanoSSM(nn.Module):
     def __call__(self, x):
         x = self.embed(x)
         for block in self.blocks:
-            x = block(x)
+            x = mx.checkpoint(block)(x) if self._grad_checkpoint else block(x)
         x = self.norm(x)
 
         if self.task in ("lm", "lm-tok"):
@@ -292,6 +346,10 @@ def main():
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
+    parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE, help="SSD chunk size Q (default 64, smaller = less GPU pressure)")
+    parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
+    parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
     args = parser.parse_args()
 
     # Resolve model dimensions: defaults < --size < NS_* env vars
@@ -316,26 +374,55 @@ def main():
     if task == "lm":
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
-        model = NanoSSM("lm", block_type=block_type)
+        model = NanoSSM("lm", block_type=block_type, chunk_size=args.chunk_size)
     elif task == "lm-tok":
         train_data = load_fineweb("train")
         val_data = load_fineweb("val")
         vocab_size = get_fineweb_vocab_size()
-        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type)
+        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type, chunk_size=args.chunk_size)
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
-        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type)
+        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type, chunk_size=args.chunk_size)
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
         val_data = load_ett("val", ETT_VARIANT)
         n_features = train_data.shape[1]
-        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type)
+        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type, chunk_size=args.chunk_size)
 
     # materialize parameters
     mx.eval(model.parameters())
+
+    # mixed precision
+    if args.dtype != "float32":
+        dtype = mx.float16 if args.dtype == "float16" else mx.bfloat16
+        model.set_dtype(dtype)
+        mx.eval(model.parameters())
+
+    # gradient checkpointing
+    if args.grad_checkpoint:
+        model._grad_checkpoint = True
+
     n_params = count_params(model)
-    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
+
+    # hardware info + memory warning
+    hw = detect_hardware()
+    dtype_bytes = 2 if args.dtype != "float32" else 4
+    est_gb = estimate_training_memory_gb(n_params, dtype_bytes)
+    if est_gb > hw["memory_gb"] * 0.8:
+        print(f"WARNING: estimated {est_gb:.1f}GB training memory may exceed {hw['memory_gb']:.0f}GB ({hw['name']})")
+        print("  Try: --size smaller, --grad-checkpoint, or reduce --batch")
+
+    flags = []
+    if args.dtype != "float32":
+        flags.append(args.dtype)
+    if args.compile:
+        flags.append("compiled")
+    if args.grad_checkpoint:
+        flags.append("grad-ckpt")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
+    print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory")
 
     # Cosine decay with linear warmup
     warmup_steps = min(100, max_steps // 10)
@@ -349,6 +436,17 @@ def main():
     optimizer = optim.Adam(learning_rate=lr_schedule)
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
+
+    # training step (optionally compiled)
+    state = [model.state, optimizer.state]
+
+    def train_step(x, y):
+        loss, grads = loss_and_grad(model, x, y)
+        optimizer.update(model, grads)
+        return loss
+
+    if args.compile:
+        train_step = mx.compile(train_step, inputs=state, outputs=state)
 
     # --- logging ---
     os.makedirs("logs", exist_ok=True)
@@ -376,6 +474,7 @@ def main():
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
             "block_type": block_type,
+            "chunk_size": args.chunk_size,
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size
@@ -399,9 +498,8 @@ def main():
             xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
             x, y = mx.array(xnp), mx.array(ynp)
 
-        train_loss, grads = loss_and_grad(model, x, y)
-        optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state, train_loss)
+        train_loss = train_step(x, y)
+        mx.eval(state, train_loss)
 
         step_ms = (time.time() - ts) * 1000
 

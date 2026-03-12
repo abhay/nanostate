@@ -150,6 +150,17 @@ uv run python train.py --block ssd    # Mamba-2 SSD — chunked matmul, input-de
 
 S4D is fast and stable. SSD adds selectivity (the model can choose what to remember based on content), which breaks through the LTI ceiling where deeper S4D models stop improving. SSD uses the same `--size` presets and all the same tooling (generation, visualization, benchmarks).
 
+## Performance flags
+
+```bash
+uv run python train.py --compile                # fuse ops via mx.compile (faster steps)
+uv run python train.py --dtype float32          # full precision (bfloat16 is default)
+uv run python train.py --grad-checkpoint        # trade compute for memory (enables larger models on 16GB)
+uv run python train.py --chunk-size 32          # smaller SSD chunks (avoids Metal GPU watchdog on long runs)
+```
+
+Training uses bfloat16 by default. All flags are composable: `--compile --grad-checkpoint --chunk-size 32`. Works with both S4D and SSD. Hardware is auto-detected and training memory is estimated at startup.
+
 ## Generation
 
 Train a model, then generate text from it. Runs in recurrent mode: constant memory, constant cost per token. No KV cache.
