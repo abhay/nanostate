@@ -14,6 +14,11 @@ Model sizes (byte-level LM params):
   python train.py --size small    # d=384, L=4   (~4.3M params, default)
   python train.py --size medium   # d=768, L=6   (~23M params)
   python train.py --size large    # d=1024, L=12 (~81M params)
+
+Performance flags:
+  python train.py --compile                # fuse ops via mx.compile
+  python train.py --dtype float32           # full precision (bfloat16 is default)
+  python train.py --grad-checkpoint        # trade compute for memory
 """
 
 import argparse
@@ -21,7 +26,6 @@ import csv
 import json
 import os
 import time
-from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -38,6 +42,92 @@ from data import (
     load_fineweb,
     load_shakespeare,
 )
+
+# ---------------------------------------------------------------------------
+# Hardware detection
+# ---------------------------------------------------------------------------
+
+
+def detect_hardware():
+    """Detect Apple Silicon chip and capabilities."""
+    info = mx.device_info()
+    name = info.get("device_name", "Unknown")
+    memory_bytes = info.get("memory_size", 0)
+    memory_gb = memory_bytes / (1024**3)
+
+    # Chip generation from device name (M1=1, M2=2, ..., M5=5)
+    gen = 1
+    for g in range(9, 0, -1):
+        if f"M{g}" in name:
+            gen = g
+            break
+
+    return {
+        "name": name,
+        "memory_gb": memory_gb,
+        "generation": gen,
+    }
+
+
+def auto_config(hw):
+    """Suggest training defaults based on detected hardware.
+
+    Returns a dict of suggested values. CLI args and NS_* env vars
+    always override these — auto_config just picks smarter defaults
+    than the hardcoded ones.
+    """
+    mem = hw["memory_gb"]
+
+    # Size: fit the biggest model that leaves headroom
+    if mem >= 128:
+        size = "large"
+    elif mem >= 48:
+        size = "medium"
+    elif mem >= 16:
+        size = "small"
+    else:
+        size = "tiny"
+
+    # Batch: scale with memory, cap at 64
+    if mem >= 64:
+        batch = 64
+    elif mem >= 32:
+        batch = 48
+    elif mem >= 16:
+        batch = 32
+    else:
+        batch = 16
+
+    # Chunk size: larger memory can handle bigger chunks
+    if mem >= 32:
+        chunk_size = 128
+    elif mem >= 16:
+        chunk_size = 64
+    else:
+        chunk_size = 32
+
+    # Grad checkpoint: suggest for tight memory
+    grad_checkpoint = mem < 16
+
+    return {
+        "size": size,
+        "batch": batch,
+        "chunk_size": chunk_size,
+        "grad_checkpoint": grad_checkpoint,
+    }
+
+
+def estimate_training_memory_gb(n_params, dtype_bytes=4):
+    """Rough estimate of peak training memory.
+
+    params + grads + optimizer state (Adam m,v in fp32) + activations.
+    """
+    param_bytes = n_params * dtype_bytes
+    grad_bytes = param_bytes
+    optim_bytes = n_params * 4 * 2  # Adam m, v always float32
+    act_bytes = param_bytes * 2  # rough: ~2x params for activations
+    return (param_bytes + grad_bytes + optim_bytes + act_bytes) / (1024**3)
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -57,6 +147,7 @@ D_MODEL = 384
 N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
+CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
@@ -70,6 +161,22 @@ SEQ_LEN = int(os.environ.get("NS_SEQ_LEN", 256))  # for lm and ts
 PRED_LEN = 96  # forecast horizon for ts
 DNA_TASK = "promoter_no_tata"
 ETT_VARIANT = "ETTh1"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_attn_layers(s, n_layers):
+    """Parse comma-separated layer indices for attention placement."""
+    indices = set()
+    for part in s.split(","):
+        idx = int(part.strip())
+        if idx < 0 or idx >= n_layers:
+            raise ValueError(f"--attn-layers index {idx} out of range [0, {n_layers})")
+        indices.add(idx)
+    return indices
+
 
 # ---------------------------------------------------------------------------
 # S4D Layer (real diagonal, convolutional mode)
@@ -161,10 +268,24 @@ class SSMBlock(nn.Module):
 
 
 class NanoSSM(nn.Module):
-    def __init__(self, task: str, vocab_size: int = 256, n_classes: int = 2, n_features: int = 7, pred_len: int = 96, block_type: str = "s4d"):
+    def __init__(
+        self,
+        task: str,
+        vocab_size: int = 256,
+        n_classes: int = 2,
+        n_features: int = 7,
+        pred_len: int = 96,
+        block_type: str = "s4d",
+        chunk_size: int = 64,
+        attn_layers: list = None,
+        attn_type: str = "full",
+        attn_window: int = None,
+        use_metal: bool = False,
+    ):
         super().__init__()
         self.task = task
         self.block_type = block_type
+        self._grad_checkpoint = False
 
         # embedding
         if task in ("lm", "lm-tok"):
@@ -175,10 +296,22 @@ class NanoSSM(nn.Module):
             self.embed = nn.Linear(n_features, D_MODEL)
 
         # shared backbone
-        if block_type == "ssd":
+        if block_type == "hybrid":
+            from attention import AttentionBlock
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM) for _ in range(N_LAYERS)]
+            attn_set = set(attn_layers) if attn_layers else {N_LAYERS // 2}
+            window = attn_window if attn_type == "sliding" else None
+            self.blocks = []
+            for i in range(N_LAYERS):
+                if i in attn_set:
+                    self.blocks.append(AttentionBlock(D_MODEL, window=window))
+                else:
+                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size, use_metal=use_metal))
+        elif block_type == "ssd":
+            from ssd import SSDBlock
+
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
@@ -195,7 +328,7 @@ class NanoSSM(nn.Module):
     def __call__(self, x):
         x = self.embed(x)
         for block in self.blocks:
-            x = block(x)
+            x = mx.checkpoint(block)(x) if self._grad_checkpoint else block(x)
         x = self.norm(x)
 
         if self.task in ("lm", "lm-tok"):
@@ -287,13 +420,57 @@ def count_params(model):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=["lm", "lm-tok", "dna", "ts"], default="lm")
+    parser.add_argument("--auto", action="store_true", help="Auto-configure size, batch, chunk-size based on hardware")
     parser.add_argument("--size", choices=list(SIZE_PRESETS), default=None, help="Model size preset (overridden by NS_* env vars)")
-    parser.add_argument("--block", choices=["s4d", "ssd"], default="s4d", help="Block type: s4d (FFT conv) or ssd (Mamba-2 selective)")
+    parser.add_argument(
+        "--block",
+        choices=["s4d", "ssd", "hybrid"],
+        default="s4d",
+        help="Block type: s4d (FFT conv), ssd (Mamba-2), or hybrid (SSD+attention)",
+    )
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     parser.add_argument("--save", metavar="DIR", help="Save model checkpoint to DIR after training")
+    parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE, help="SSD chunk size Q (default 64, smaller = less GPU pressure)")
+    parser.add_argument("--compile", action="store_true", help="Fuse ops with mx.compile (faster steps)")
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16", help="Model precision (default bfloat16)")
+    parser.add_argument("--grad-checkpoint", action="store_true", help="Gradient checkpointing (less memory, slower)")
+    parser.add_argument("--metal", action="store_true", help="(ignored, kept for compat) Metal kernels are inference-only")
+    parser.add_argument(
+        "--attn-layers",
+        default=None,
+        help="Comma-separated 0-indexed attention layer positions (default: middle)",
+    )
+    parser.add_argument(
+        "--attn-type",
+        choices=["full", "sliding"],
+        default="full",
+        help="Attention type for hybrid (default: full causal)",
+    )
+    parser.add_argument(
+        "--attn-window",
+        type=int,
+        default=None,
+        help="Sliding window size (requires --attn-type sliding)",
+    )
     args = parser.parse_args()
+
+    if args.attn_window is not None and args.attn_type != "sliding":
+        parser.error("--attn-window requires --attn-type sliding")
+
+    # Auto-configure: detect hardware, suggest defaults (explicit flags override)
+    hw = detect_hardware()
+    if args.auto:
+        ac = auto_config(hw)
+        if args.size is None and "NS_D_MODEL" not in os.environ:
+            args.size = ac["size"]
+        if args.batch == BATCH_SIZE and "NS_BATCH_SIZE" not in os.environ:
+            args.batch = ac["batch"]
+        if args.chunk_size == CHUNK_SIZE and "NS_CHUNK_SIZE" not in os.environ:
+            args.chunk_size = ac["chunk_size"]
+        if not args.grad_checkpoint:
+            args.grad_checkpoint = ac["grad_checkpoint"]
 
     # Resolve model dimensions: defaults < --size < NS_* env vars
     global D_MODEL, N_LAYERS, STATE_DIM
@@ -313,39 +490,103 @@ def main():
     max_steps = args.steps or int(os.environ.get("NS_STEPS", MAX_STEPS_DEFAULT.get(task, 1000)))
     lr = args.lr
 
+    attn_layers = None
+    if args.attn_layers:
+        attn_layers = list(parse_attn_layers(args.attn_layers, N_LAYERS))
+    elif block_type == "hybrid":
+        attn_layers = [N_LAYERS // 2]
+
     # --- data ---
     if task == "lm":
         train_data = load_shakespeare("train")
         val_data = load_shakespeare("val")
-        model = NanoSSM("lm", block_type=block_type)
+        model = NanoSSM(
+            "lm",
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+            use_metal=False,
+        )
     elif task == "lm-tok":
         train_data = load_fineweb("train")
         val_data = load_fineweb("val")
         vocab_size = get_fineweb_vocab_size()
-        model = NanoSSM("lm-tok", vocab_size=vocab_size, block_type=block_type)
+        model = NanoSSM(
+            "lm-tok",
+            vocab_size=vocab_size,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+            use_metal=False,
+        )
     elif task == "dna":
         train_seqs, train_labels, _, n_classes, max_len = load_dna("train", DNA_TASK)
         val_seqs, val_labels, _, _, _ = load_dna("test", DNA_TASK)
-        model = NanoSSM("dna", n_classes=n_classes, block_type=block_type)
+        model = NanoSSM(
+            "dna",
+            n_classes=n_classes,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+            use_metal=False,
+        )
     elif task == "ts":
         train_data = load_ett("train", ETT_VARIANT)
         val_data = load_ett("val", ETT_VARIANT)
         n_features = train_data.shape[1]
-        model = NanoSSM("ts", n_features=n_features, pred_len=PRED_LEN, block_type=block_type)
+        model = NanoSSM(
+            "ts",
+            n_features=n_features,
+            pred_len=PRED_LEN,
+            block_type=block_type,
+            chunk_size=args.chunk_size,
+            attn_layers=attn_layers,
+            attn_type=args.attn_type,
+            attn_window=args.attn_window,
+            use_metal=False,
+        )
 
     # materialize parameters
     mx.eval(model.parameters())
 
-    # Optional mixed precision (NS_DTYPE=float16 or bfloat16)
-    dtype_name = os.environ.get("NS_DTYPE", "")
-    if dtype_name:
-        dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16}
-        if dtype_name in dtype_map:
-            model.set_dtype(dtype_map[dtype_name])
-            mx.eval(model.parameters())
+    # mixed precision
+    if args.dtype != "float32":
+        dtype = mx.float16 if args.dtype == "float16" else mx.bfloat16
+        model.set_dtype(dtype)
+        mx.eval(model.parameters())
+
+    # gradient checkpointing
+    if args.grad_checkpoint:
+        model._grad_checkpoint = True
 
     n_params = count_params(model)
-    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params")
+
+    # hardware info + memory warning
+    hw = detect_hardware()
+    dtype_bytes = 2 if args.dtype != "float32" else 4
+    est_gb = estimate_training_memory_gb(n_params, dtype_bytes)
+    if est_gb > hw["memory_gb"] * 0.8:
+        print(f"WARNING: estimated {est_gb:.1f}GB training memory may exceed {hw['memory_gb']:.0f}GB ({hw['name']})")
+        print("  Try: --size smaller, --grad-checkpoint, or reduce --batch")
+
+    flags = []
+    if args.dtype != "float32":
+        flags.append(args.dtype)
+    if args.compile:
+        flags.append("compiled")
+    if args.grad_checkpoint:
+        flags.append("grad-ckpt")
+    if args.metal:
+        flags.append("metal")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    print(f"NanoSSM ({task}): {N_LAYERS} layers, d={D_MODEL}, state={STATE_DIM}, {n_params:,} params{flag_str}")
+    print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory")
 
     # Cosine decay with linear warmup
     warmup_steps = min(100, max_steps // 10)
@@ -360,18 +601,16 @@ def main():
     loss_fn = LOSS_FN[task]
     loss_and_grad = nn.value_and_grad(model, loss_fn)
 
-    # Optional mx.compile for fusing element-wise ops (NS_COMPILE=1)
-    use_compile = int(os.environ.get("NS_COMPILE", "0"))
-    if use_compile:
-        state = [model.state, optimizer.state]
+    # training step (optionally compiled)
+    state = [model.state, optimizer.state]
 
-        @partial(mx.compile, inputs=state, outputs=state)
-        def train_step(x, y):
-            loss, grads = loss_and_grad(model, x, y)
-            optimizer.update(model, grads)
-            return loss
-    else:
-        train_step = None
+    def train_step(x, y):
+        loss, grads = loss_and_grad(model, x, y)
+        optimizer.update(model, grads)
+        return loss
+
+    if args.compile:
+        train_step = mx.compile(train_step, inputs=state, outputs=state)
 
     # --- logging ---
     os.makedirs("logs", exist_ok=True)
@@ -399,9 +638,15 @@ def main():
             "state_dim": STATE_DIM,
             "mlp_ratio": MLP_RATIO,
             "block_type": block_type,
+            "chunk_size": args.chunk_size,
         }
         if task == "lm-tok":
             config["vocab_size"] = vocab_size
+        if attn_layers is not None:
+            config["attn_layers"] = attn_layers
+            config["attn_type"] = args.attn_type
+            if args.attn_window is not None:
+                config["attn_window"] = args.attn_window
         model.save_weights(os.path.join(path, "model.npz"))
         with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(config, f, indent=2)
@@ -422,13 +667,8 @@ def main():
             xnp, ynp = get_batch_ts(train_data, batch_size, SEQ_LEN, PRED_LEN)
             x, y = mx.array(xnp), mx.array(ynp)
 
-        if train_step is not None:
-            train_loss = train_step(x, y)
-            mx.eval(train_loss)
-        else:
-            train_loss, grads = loss_and_grad(model, x, y)
-            optimizer.update(model, grads)
-            mx.eval(model.parameters(), optimizer.state, train_loss)
+        train_loss = train_step(x, y)
+        mx.eval(state, train_loss)
 
         step_ms = (time.time() - ts) * 1000
 

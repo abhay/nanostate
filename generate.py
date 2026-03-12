@@ -60,9 +60,25 @@ def main():
     state = RecurrentState(model)
 
     d, n_layers, n = config["d_model"], config["n_layers"], config["state_dim"]
-    state_bytes = n_layers * d * n * 4
+    block_type = config.get("block_type", "s4d")
     mode = "BPE" if enc else "byte"
-    print(f"Model: d={d}, L={n_layers}, N={n} | state: {state_bytes:,} bytes | {mode}", file=sys.stderr)
+
+    if block_type == "hybrid":
+        attn_layers = config.get("attn_layers", [])
+        n_attn = len(attn_layers)
+        n_ssm = n_layers - n_attn
+        ssm_bytes = n_ssm * d * n * 4
+        print(
+            f"Model: d={d}, L={n_layers} ({n_ssm} SSD + {n_attn} attn), N={n} | "
+            f"SSM state: {ssm_bytes:,} bytes + KV cache (grows with context) | {mode}",
+            file=sys.stderr,
+        )
+    else:
+        state_bytes = n_layers * d * n * 4
+        print(
+            f"Model: d={d}, L={n_layers}, N={n} | state: {state_bytes:,} bytes | {mode}",
+            file=sys.stderr,
+        )
     print(f"Generating {args.tokens} tokens (temp={args.temp}, top_k={args.top_k})", file=sys.stderr)
     print("---", file=sys.stderr)
 

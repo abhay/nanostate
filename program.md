@@ -41,6 +41,23 @@ To set up a new experiment run:
 
 Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task lm-tok` or `--task dna` or `--task ts`).
 
+**Three block types:**
+- `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
+- `--block ssd`: Mamba-2 SSD with chunked matmul. Input-dependent A/B/C (selective). Slower per step but breaks the LTI ceiling. **Use this for lm-tok experiments** — S4D L=4 and L=6 converge to the same val_bpb, SSD does not.
+- `--block hybrid`: Mix SSD layers with attention layers. Uses `--attn-layers` to specify which layer positions get attention (default: middle layer). Supports `--attn-type {full, sliding}` and `--attn-window`. Attention heads are auto-derived (d_model // 64). The Mamba-2 paper shows 10% attention is optimal -- with L=4, that's 1 attention layer.
+  - Example: `--block hybrid --attn-layers 2` (attention at layer 2, SSD everywhere else)
+  - Example: `--block hybrid --attn-layers 1,3 --attn-type sliding --attn-window 64`
+  - Note: attention heads (n_heads = d_model // 64) may become configurable in future
+  - Suggested experiments: try attention at different layer positions (0 vs 1 vs 2 vs 3)
+
+**Performance flags (use these!):**
+- `--compile`: Fuses element-wise ops via `mx.compile`. Adds ~2-3s JIT overhead on first step, then faster steady-state. Use on all runs longer than 100 steps.
+- `--dtype bfloat16` (default): Halves memory bandwidth. Works on all Apple Silicon. The 50K vocab projection dominates lm-tok and benefits most from reduced precision.
+- Do NOT use `--dtype float16` — it goes NaN without loss scaling. Use `--dtype float32` if you need full precision for debugging.
+- `--grad-checkpoint`: Recomputes activations during backward instead of storing. Enables `--size medium` and `--size large` on 16GB machines. Costs ~30% more compute.
+- `--chunk-size Q`: SSD chunk size (default 64). **If you hit Metal GPU watchdog crashes, reduce to 32 or 16.** Smaller chunks = smaller GPU commands = less likely to trigger the ~5-10s macOS GPU timeout. Also settable via `NS_CHUNK_SIZE` env var.
+- All flags are composable: `--block ssd --compile --grad-checkpoint --chunk-size 32`. Works with all block types (s4d, ssd, hybrid).
+
 **Two language modeling modes:**
 - `--task lm`: byte-level TinyShakespeare. Fast (~80s for 1000 steps). Good for quick iteration.
 - `--task lm-tok`: BPE token-level FineWebEdu (GPT-2 tokenizer, 50K vocab). Slower but avoids overfitting. This is the real benchmark.
@@ -140,7 +157,7 @@ LOOP FOREVER:
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
-**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok`, expect ~500ms/step — so 1000 steps ≈ 10 min, 3000 steps ≈ 30 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
+**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok` with S4D, expect ~1.5s/step — so 1000 steps ≈ 25 min, 3000 steps ≈ 75 min. For `lm-tok` with SSD (`--block ssd`), expect ~9-10s/step — so 1000 steps ≈ 170 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
@@ -159,7 +176,8 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - SSD allows larger state dim (64-256) with no speed penalty. Mamba-1 was limited to N=16.
 - Reference implementation is ~35 lines of PyTorch. See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for full details.
 - Paper: "Transformers are SSMs" (Dao & Gu, 2024) https://arxiv.org/abs/2405.21060
-- **Implementation plan:** Build SSD in `ssd.py` (new file), test independently, then add `--block {s4d,ssd}` flag to train.py for A/B comparison.
+- **SSD is implemented.** Use `--block ssd` to enable it. The implementation is in `ssd.py`. Early A/B on byte-level LM: SSD train loss much lower (1.064 vs 1.272) but similar val_bpb. lm-tok is where it should shine — that's where the LTI ceiling blocks S4D.
+- **SSD is ~67% slower per step** than S4D due to chunked matmul overhead. Prioritize mx.compile and mixed precision to close the speed gap.
 
 **Quick wins to try on lm-tok:**
 - **C init scale**: Currently 0.01 × randn — very small. Try 0.1 or 1.0 so the SSM output has more influence early in training.
@@ -169,7 +187,7 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - **seq_len=512 or 1024 on lm-tok**: Hurt on lm (overfitting), but lm-tok doesn't overfit. Longer sequences let the SSM use its long-range memory advantage.
 
 **Architecture:**
-- Hybrid: mix SSM layers with 1-2 attention layers. Active research area (Jamba, Zamba).
+- Hybrid: **implemented** as `--block hybrid`. Mix SSD layers with attention layers. See block types above.
 - Different MLP designs (SwiGLU).
 
 **Discretization:**
@@ -177,9 +195,9 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - The current implementation uses a simple exponential discretization.
 
 **Speed & precision:**
-- **mx.compile** — wrap the training step to fuse element-wise ops. Must be a pure function with explicit state (`inputs=[model.state, optimizer.state, mx.random.state]`). Recompiles on shape changes. Easy win.
-- **Mixed precision** — `model.set_dtype(mx.bfloat16)` or `mx.float16`. bfloat16 preferred (better range, no loss scaling needed). Use Python scalars for scalar ops to avoid accidental upcasting. `mx.fast.layer_norm` and `mx.fast.rms_norm` accumulate in higher precision automatically.
-- **Gradient checkpointing** — `@mx.checkpoint` on per-block forward pass. Recomputes activations during backward instead of storing. Enables larger models on 16GB.
+- All performance flags are implemented as CLI args — see "Performance flags" in Experimentation above.
+- **Recommended for lm-tok**: `--compile` on every run. Add `--grad-checkpoint` for `--size medium` or larger.
+- **Recommended for SSD + lm-tok**: `--compile --chunk-size 32` (smaller chunks avoid Metal GPU watchdog crashes).
 - Profile where time is spent: for lm-tok, ~90% of params are in embed+head (50257×d_model). Mixed precision is the biggest win here.
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
@@ -187,7 +205,7 @@ The model has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiL
 - Learning rate warmup ratio: current warmup is min(100, steps/10). For longer runs (5K+), the warmup ratio matters — experiment with 1-5% warmup.
 - Cosine decay min LR: currently decays to 1e-5. For longer runs, the final LR matters more.
 - Gradient accumulation: simulate larger effective batch size without more memory. Accumulate gradients over N steps before updating.
-- Weight decay may help on lm-tok (it hurt on lm where the model was overfitting TinyShakespeare, but lm-tok is in an underfitting regime).
+- Weight decay hurts on lm-tok (mar12 tested AdamW weight_decay=0.1: 7.778 vs 7.760 baseline). Don't retry.
 - Model scaling: use `--size medium` or `--size large` to test bigger models. If an idea works at `small`, validate at `medium` to check scaling.
 
 **Don't be afraid to break things.** The starting model is intentionally basic. Radical changes (replacing the entire SSM core, changing the block structure, adding new components) are encouraged. This is research.

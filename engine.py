@@ -40,6 +40,14 @@ def load_model(checkpoint_dir):
         kwargs["vocab_size"] = config["vocab_size"]
     if config.get("block_type"):
         kwargs["block_type"] = config["block_type"]
+    if config.get("chunk_size"):
+        kwargs["chunk_size"] = config["chunk_size"]
+    if config.get("attn_layers"):
+        kwargs["attn_layers"] = config["attn_layers"]
+    if config.get("attn_type"):
+        kwargs["attn_type"] = config["attn_type"]
+    if config.get("attn_window"):
+        kwargs["attn_window"] = config["attn_window"]
     model = train_module.NanoSSM(config["task"], **kwargs)
     model.load_weights(os.path.join(checkpoint_dir, "model.npz"))
     mx.eval(model.parameters())
@@ -61,7 +69,9 @@ class RecurrentState:
         self.model = model
         self._block_type = getattr(model, "block_type", "s4d")
 
-        if self._block_type == "ssd":
+        if self._block_type == "hybrid":
+            self._init_hybrid()
+        elif self._block_type == "ssd":
             self._init_ssd()
         else:
             self._init_s4d()
@@ -99,6 +109,32 @@ class RecurrentState:
             self._conv_bufs.append(mx.zeros((block.conv_pad, d_inner)))
         mx.eval(self.states, self._conv_bufs)
 
+    def _init_hybrid(self):
+        """Init states for mixed SSD + Attention blocks."""
+        self.states = []
+        self._conv_bufs = []
+        self._kv_caches = []
+        self._block_types = []
+
+        for block in self.model.blocks:
+            if hasattr(block, "qkv_proj"):  # AttentionBlock
+                self._block_types.append("attention")
+                self.states.append(None)
+                self._conv_bufs.append(None)
+                self._kv_caches.append((None, None))
+            else:  # SSDBlock
+                self._block_types.append("ssd")
+                ssd = block.ssd
+                self.states.append(mx.zeros((ssd.n_heads, ssd.d_head, ssd.d_state)))
+                d_inner = block.in_proj.weight.shape[0] // 2
+                self._conv_bufs.append(mx.zeros((block.conv_pad, d_inner)))
+                self._kv_caches.append(None)
+
+        to_eval_list = [s for s in self.states if s is not None]
+        to_eval_list += [b for b in self._conv_bufs if b is not None]
+        if to_eval_list:
+            mx.eval(*to_eval_list)
+
     def _silu(self, x):
         return x * mx.sigmoid(x)
 
@@ -110,14 +146,30 @@ class RecurrentState:
         """
         x = self.model.embed(mx.array([token]))[0]  # (d_model,)
 
-        if self._block_type == "ssd":
+        if self._block_type == "hybrid":
+            x = self._step_hybrid(x)
+        elif self._block_type == "ssd":
             x = self._step_ssd(x)
         else:
             x = self._step_s4d(x)
 
         x = self.model.norm(x)
         logits = self.model.head(x)
-        mx.eval(logits, *self.states)
+
+        # Materialize: include all non-None states, conv_bufs, kv_caches.
+        # Note: this improves on the old SSD step() which only eval'd states,
+        # not conv_bufs. Now conv_bufs are properly materialized for SSD too.
+        to_materialize = [logits]
+        to_materialize += [s for s in self.states if s is not None]
+        if self._block_type in ("ssd", "hybrid"):
+            to_materialize += [b for b in self._conv_bufs if b is not None]
+        if self._block_type == "hybrid":
+            for pair in self._kv_caches:
+                if pair is not None:
+                    kc, vc = pair
+                    if kc is not None:
+                        to_materialize += [kc, vc]
+        mx.eval(*to_materialize)
         return logits
 
     def _step_s4d(self, x):
@@ -147,47 +199,91 @@ class RecurrentState:
                 x = block.norm2(x + block.mlp(x))
         return x
 
+    def _step_ssd_layer(self, x, i):
+        """Single SSD layer recurrent step."""
+        block = self.model.blocks[i]
+        ssd = block.ssd
+        residual = x
+        x_norm = block.norm(x)
+
+        xz = block.in_proj(x_norm)
+        d_inner = xz.shape[0] // 2
+        x_raw, z = xz[:d_inner], xz[d_inner:]
+
+        # Causal conv1d: shift buffer and apply conv weights
+        self._conv_bufs[i] = mx.concatenate([self._conv_bufs[i][1:], x_raw[None, :]], axis=0)
+        conv_input = mx.concatenate([self._conv_bufs[i], x_raw[None, :]], axis=0)
+        conv_w = block.conv1d.weight[:, 0, :]
+        x_conv = mx.sum(conv_w * conv_input.T, axis=1)
+        if hasattr(block.conv1d, "bias") and block.conv1d.bias is not None:
+            x_conv = x_conv + block.conv1d.bias
+        x_conv = self._silu(x_conv)
+
+        # Input-dependent A, B, C
+        a = -self._softplus(ssd.a_proj(x_conv))
+        b = ssd.b_proj(x_conv)
+        c = ssd.c_proj(x_conv)
+
+        x_heads = x_conv.reshape(ssd.n_heads, ssd.d_head)
+        decay = mx.exp(a)
+        self.states[i] = decay[:, None, None] * self.states[i] + x_heads[:, :, None] * b[None, None, :]
+        y_heads = mx.sum(self.states[i] * c[None, None, :], axis=2)
+        y = y_heads.reshape(-1) + ssd.D * x_conv
+
+        y = y * self._silu(z)
+        return residual + block.out_proj(y)
+
     def _step_ssd(self, x):
-        for i, block in enumerate(self.model.blocks):
-            ssd = block.ssd
-            residual = x
-            x_norm = block.norm(x)
+        for i in range(len(self.model.blocks)):
+            x = self._step_ssd_layer(x, i)
+        return x
 
-            # Parallel projections
-            xz = block.in_proj(x_norm)
-            d_inner = xz.shape[0] // 2
-            x_raw, z = xz[:d_inner], xz[d_inner:]
+    def _step_attention(self, x, layer_idx):
+        """Single-token attention step with growing KV cache."""
+        block = self.model.blocks[layer_idx]
+        residual = x
+        x_norm = block.norm(x)
 
-            # Causal conv1d: shift buffer and apply conv weights
-            self._conv_bufs[i] = mx.concatenate([self._conv_bufs[i][1:], x_raw[None, :]], axis=0)
-            # Manual conv: concat buffer + current, apply depthwise weights
-            conv_input = mx.concatenate([self._conv_bufs[i], x_raw[None, :]], axis=0)  # (kernel_size, d_inner)
-            # Conv1d weights: (d_inner, 1, kernel_size) in MLX
-            conv_w = block.conv1d.weight[:, 0, :]  # (d_inner, kernel_size)
-            x_conv = mx.sum(conv_w * conv_input.T, axis=1)  # (d_inner,)
-            if hasattr(block.conv1d, "bias") and block.conv1d.bias is not None:
-                x_conv = x_conv + block.conv1d.bias
-            x_conv = self._silu(x_conv)
+        qkv = block.qkv_proj(x_norm)
+        d = qkv.shape[0] // 3
+        q, k, v = qkv[:d], qkv[d : 2 * d], qkv[2 * d :]
+        n_heads, d_head = block.n_heads, block.d_head
+        q = q.reshape(n_heads, d_head)
+        k = k.reshape(n_heads, d_head)
+        v = v.reshape(n_heads, d_head)
 
-            # Input-dependent A, B, C
-            a = -self._softplus(ssd.a_proj(x_conv))  # (n_heads,)
-            b = ssd.b_proj(x_conv)  # (d_state,)
-            c = ssd.c_proj(x_conv)  # (d_state,)
+        # Append to KV cache: each is (H, T, d_head) where T grows
+        k_cache, v_cache = self._kv_caches[layer_idx]
+        if k_cache is None:
+            k_cache = k[:, None, :]
+            v_cache = v[:, None, :]
+        else:
+            k_cache = mx.concatenate([k_cache, k[:, None, :]], axis=1)
+            v_cache = mx.concatenate([v_cache, v[:, None, :]], axis=1)
 
-            # Reshape x for multi-head: (d_inner,) -> (n_heads, d_head)
-            x_heads = x_conv.reshape(ssd.n_heads, ssd.d_head)
+        # Sliding window: truncate cache
+        if block.window is not None and k_cache.shape[1] > block.window:
+            k_cache = k_cache[:, -block.window :]
+            v_cache = v_cache[:, -block.window :]
 
-            # Recurrent SSD step: h = a * h + B * x, y = C^T * h
-            # a is scalar per head, h is (n_heads, d_head, d_state)
-            decay = mx.exp(a)  # (n_heads,)
-            self.states[i] = decay[:, None, None] * self.states[i] + x_heads[:, :, None] * b[None, None, :]
-            # Output: y = C^T * h + D * x
-            y_heads = mx.sum(self.states[i] * c[None, None, :], axis=2)  # (n_heads, d_head)
-            y = y_heads.reshape(-1) + ssd.D * x_conv  # (d_inner,)
+        self._kv_caches[layer_idx] = (k_cache, v_cache)
 
-            # Gate and project
-            y = y * self._silu(z)
-            x = residual + block.out_proj(y)
+        # Attention: q @ k^T -> softmax -> @ v
+        q_exp = q[:, None, :]  # (H, 1, d_head)
+        scale = 1.0 / (d_head**0.5)
+        scores = (q_exp @ k_cache.transpose(0, 2, 1)) * scale
+        weights = mx.softmax(scores, axis=-1)
+        y = (weights @ v_cache).squeeze(1)  # (H, d_head)
+        y = y.reshape(-1)  # (D,)
+
+        return residual + block.out_proj(y)
+
+    def _step_hybrid(self, x):
+        for i in range(len(self.model.blocks)):
+            if self._block_types[i] == "attention":
+                x = self._step_attention(x, i)
+            else:
+                x = self._step_ssd_layer(x, i)
         return x
 
     def _softplus(self, x):
@@ -196,10 +292,19 @@ class RecurrentState:
     def reset(self):
         """Reset hidden state to zeros."""
         for i in range(len(self.states)):
-            self.states[i] = mx.zeros_like(self.states[i])
-        if self._block_type == "ssd":
+            if self.states[i] is not None:
+                self.states[i] = mx.zeros_like(self.states[i])
+        if self._block_type in ("ssd", "hybrid"):
             for i in range(len(self._conv_bufs)):
-                self._conv_bufs[i] = mx.zeros_like(self._conv_bufs[i])
-            mx.eval(self.states, self._conv_bufs)
-        else:
-            mx.eval(self.states)
+                if self._conv_bufs[i] is not None:
+                    self._conv_bufs[i] = mx.zeros_like(self._conv_bufs[i])
+        if self._block_type == "hybrid":
+            for i in range(len(self._kv_caches)):
+                if self._kv_caches[i] is not None:
+                    self._kv_caches[i] = (None, None)
+
+        to_materialize = [s for s in self.states if s is not None]
+        if self._block_type in ("ssd", "hybrid"):
+            to_materialize += [b for b in self._conv_bufs if b is not None]
+        if to_materialize:
+            mx.eval(*to_materialize)
