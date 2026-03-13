@@ -144,8 +144,8 @@ class SSDLayer(nn.Module):
 
         # Input-dependent A, B, C (this is selectivity)
         A = -nn.softplus(self.a_proj(x))  # (B, L, H) — negative log-decay
-        B_proj = self.b_proj(x)  # (B, L, N)
-        C_proj = self.c_proj(x)  # (B, L, N)
+        B_proj = nn.silu(self.b_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
+        C_proj = nn.silu(self.c_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
 
         # Expand B, C to all heads (shared, MVA pattern)
         B_proj = mx.broadcast_to(B_proj[:, :, None, :], (B, L, self.n_heads, self.d_state))
