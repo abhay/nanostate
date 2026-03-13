@@ -63,3 +63,5 @@ cd360d3	lm-tok	7.807	42239185	discard	hybrid attn@2 + compile + metal-eval + seq
 cd360d3	lm-tok	7.934	42239185	discard	hybrid attn@0 + compile + metal-eval + seq512 (1000 steps, worst hybrid position)
 cd360d3	lm-tok	7.8001	42239185	discard	hybrid attn@3 + compile + metal-eval + seq512 (1000 steps, best hybrid pos but worse than pure SSD)
 c802fd9	lm-tok	7.315	42646609	keep	SSD + compile + metal-eval + seq512 5000 steps (best@3700=7.228, NEW RECORD vs 7.338)
+c802fd9	lm-tok	7.6303	43829329	discard	SSD + SwiGLU gating + compile + seq512 (1000 steps, same quality but 32% slower)
+c802fd9	lm-tok	7.8119	42658897	discard	SSD conv_k=8 + compile + seq512 (1000 steps, worse than k=4 by 0.14 bpb)
