@@ -54,12 +54,9 @@ Do NOT run: RMSNorm+SSD, d_head=16, min_lr=7e-5, C_SCALE, seq1024, --size medium
 
 **Three block types:**
 - `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
-- `--block ssd`: Mamba-2 SSD with chunked matmul. Input-dependent A/B/C (selective). Slower per step but breaks the LTI ceiling. **Use this for lm-tok experiments** — S4D L=4 and L=6 converge to the same val_bpb, SSD does not.
-- `--block hybrid`: Mix SSD layers with attention layers. Uses `--attn-layers` to specify which layer positions get attention (default: middle layer). Supports `--attn-type {full, sliding}` and `--attn-window`. Attention heads are auto-derived (d_model // 64). The Mamba-2 paper shows 10% attention is optimal -- with L=4, that's 1 attention layer.
-  - Example: `--block hybrid --attn-layers 2` (attention at layer 2, SSD everywhere else)
-  - Example: `--block hybrid --attn-layers 1,3 --attn-type sliding --attn-window 64`
-  - Note: attention heads (n_heads = d_model // 64) may become configurable in future
-  - Suggested experiments: try attention at different layer positions (0 vs 1 vs 2 vs 3)
+- `--block ssd`: Mamba-2 SSD with chunked matmul. Input-dependent A/B/C (selective). Slower per step but breaks the LTI ceiling. **Use this for both lm and lm-tok experiments** — S4D hits a quality ceiling that SSD breaks through.
+- `--block hybrid`: Mix SSD layers with attention layers. Uses `--attn-layers` to specify which layer positions get attention (default: middle layer). Supports `--attn-type {full, sliding}` and `--attn-window`. Attention heads are auto-derived (d_model // 64).
+  - **Verdict: loses to pure SSD at L=4.** All positions tested (attn@0: 7.934, attn@2: 7.807, attn@3: 7.800) worse than pure SSD (7.672). At L=4, 25% attention is too high — every SSD layer lost is a capacity hit. The Mamba-2 paper's 10% ratio needs L=10+ to work. Don't retry at this model scale.
 
 **Performance flags (use these!):**
 - `--compile`: Fuses element-wise ops via `mx.compile`. Adds ~2-3s JIT overhead on first step, then faster steady-state. Use on all runs longer than 100 steps.
@@ -158,7 +155,7 @@ LOOP FOREVER:
    - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN) without editing code. `NS_D_MODEL`, `NS_N_LAYERS`, `NS_STATE_DIM` still work and override `--size`. No commit needed.
    - **Code change** (for architectural changes): edit `train.py` and git commit.
    Use your judgment. Model scaling → `--size`. Pure number tuning (lr, batch, seq_len) → env vars. Structural changes (new init, gating, selectivity) → code edit.
-3. Run the experiment: `uv run python train.py --task lm --save checkpoints/lm > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Always use `--save` so the best checkpoint is tracked automatically (saved to `checkpoints/<task>/best/` whenever val_loss improves). Use `--size` or prepend env vars if sweeping, e.g. `uv run python train.py --task lm --size medium --save checkpoints/lm > run.log 2>&1`.
+3. Run the experiment: `uv run python train.py --task lm-tok --block ssd --compile --metal-eval --save checkpoints/lm_tok > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Always use `--save` so the best checkpoint is tracked automatically (saved to `checkpoints/<task>/best/` whenever val_loss improves). For byte-level: `uv run python train.py --task lm --block ssd --compile --save checkpoints/lm > run.log 2>&1`.
 4. Parse the results: `grep -A1 METRICS run.log | head -1` gives a JSON blob with all metrics.
 5. If the output is empty or shows an error, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix.
 6. Record the results in results.tsv. For env var sweeps, note the env vars in the description column.
@@ -174,7 +171,7 @@ LOOP FOREVER:
 
 **Warmup**: Before each timed run, do a quick throwaway: `uv run python train.py --task lm --steps 10 > /dev/null 2>&1`. The first run after idle compiles Metal shaders and warms the GPU. Discard it.
 
-**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok` with S4D, expect ~0.4s/step with `--compile` — so 1000 steps ≈ 8 min, 3000 steps ≈ 25 min. For `lm-tok` with SSD (`--block ssd --compile`), expect ~0.45s/step at seq256, ~3.4s/step at seq512 — so 1000 steps at seq512 ≈ 60 min. **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
+**Timeout**: Set your bash tool timeout to match the expected run time. For `lm`, 1000 steps takes ~2 min. For `lm-tok` with S4D, expect ~0.4s/step with `--compile` — so 1000 steps ≈ 8 min. For `lm-tok` with SSD (`--block ssd --compile`), expect ~4.2s/step at seq512 — so 1000 steps ≈ 70 min, 4000 steps ≈ 280 min (~4.7 hrs). **Do NOT use the default 10-minute timeout for long runs — it will kill the process.** Add a 60s buffer to your timeout. If a run exceeds 3x expected time, kill it and treat it as a failure.
 
 **Crashes**: If a run crashes, use your judgment: If it's something dumb and easy to fix, fix it and re-run. If the idea is fundamentally broken, skip it and move on.
 
@@ -182,7 +179,7 @@ LOOP FOREVER:
 
 ## SSM-specific guidance
 
-S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. SSD (Mamba-2) is implemented with chunked matmul and hybrid SSM+attention is available. Current focus is on SSD and hybrid experiments.
+S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), and cosine LR with warmup. SSD (Mamba-2) is implemented with chunked matmul. Hybrid SSM+attention is available but loses to pure SSD at L=4. Current focus: improving the SSD block and training recipe.
 
 **SSD (Mamba-2) — implemented, use `--block ssd`:**
 - Implementation in `ssd.py`. Chunked matmul algorithm, input-dependent A/B/C (selective). B/C use SiLU feature map (Mamba-2 paper).
@@ -193,10 +190,12 @@ S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), an
 - See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for design details.
 
 **Tested and resolved (don't retry):**
-- C init scale: no effect on SSD (input-dependent C projection absorbs init scale immediately). 0.1 also no help on S4D.
+- C init scale: no effect on SSD (input-dependent C projection absorbs init scale). 0.1 also no help on S4D.
 - Softplus for dt: no improvement on lm.
 - RMSNorm: slightly worse than LayerNorm on lm-tok (7.826 vs 7.760). RMSNorm before SSD gating (Mamba-2 style) hurts on both lm (2.344 vs 2.141) and lm-tok (7.966 vs 7.672), and 32% slower.
 - Weight decay (AdamW wd=0.1): hurts on lm-tok.
+- Hybrid SSM+attention: all positions worse than pure SSD at L=4 (see block types above).
+- SwiGLU gating: same quality as default SiLU but 32% slower. Discard.
 - seq_len=512: validated, use it.
 - d_head=16 (48 heads): same quality as d_head=32 but 30% slower on lm-tok. Too many heads.
 - d_head=32 vs 64: d_head=32 is slightly better on lm-tok (7.217 vs 7.228 at scale), d_head=64 is better on byte-level lm. Now default=32.
@@ -222,6 +221,7 @@ S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), an
 
 **Optimizer & training:**
 - LR=7e-4 is the sweet spot (swept 5e-4 through 1e-3). Don't re-sweep.
+- Optimal training: ~4000 steps for SSD + seq512 (overfits after ~3700). Use `--steps 4000` for validation runs.
 - Gradient accumulation: `--grad-accum N` (incompatible with `--compile`).
 - Weight decay hurts on lm-tok. Don't retry.
 - Model scaling: `--size medium` and `--size large` crash with Metal watchdog. Stick with `small` for now.
