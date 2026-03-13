@@ -151,6 +151,7 @@ N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
 D_HEAD = int(os.environ.get("NS_D_HEAD", 32))
+EXPAND = int(os.environ.get("NS_EXPAND", 2))
 CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
@@ -311,11 +312,11 @@ class NanoSSM(nn.Module):
                 if i in attn_set:
                     self.blocks.append(AttentionBlock(D_MODEL, window=window))
                 else:
-                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, chunk_size=chunk_size, use_metal=use_metal))
+                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal))
         elif block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
+            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
