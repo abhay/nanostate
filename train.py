@@ -621,7 +621,7 @@ def main():
     lr_schedule = optim.schedulers.join_schedules(
         [
             optim.schedulers.linear_schedule(1e-7, lr, warmup_steps),
-            optim.schedulers.cosine_decay(lr, max_steps - warmup_steps, 1e-5),
+            optim.schedulers.cosine_decay(lr, max_steps - warmup_steps, float(os.environ.get("NS_MIN_LR", 1e-5))),
         ],
         [warmup_steps],
     )
