@@ -72,3 +72,5 @@ ace2fef	lm-tok	7.5931	42683473	keep	SSD d_head=32 (24 heads) + B/C SiLU + compil
 ace2fef	lm	2.1875	4306432	discard	SSD d_head=16 (48 heads) + B/C SiLU + compile + metal-eval (worse than d_head=32 and d_head=64 on byte-level)
 ace2fef	lm-tok	7.6872	42757201	discard	SSD d_head=16 (48 heads) + B/C SiLU + compile + seq512 (1000 steps, 30% slower, no gain over d_head=32)
 9525b0b	lm-tok	7.6851	42683473	discard	SSD d_head=32 + min_lr=7e-5 + B/C SiLU + compile + seq512 (1000 steps, higher min LR hurts)
+e634da7	lm	2.2013	5241472	discard	SSD N_LAYERS=5 d_head=32 + B/C SiLU + compile + metal-eval (overfits on bytes, best@400=2.169)
+832481a	lm-tok	7.2828	42683473	keep	SSD d_head=32 + B/C SiLU + compile + metal-eval + seq512 5000 steps (best@2900=7.217, NEW RECORD vs 7.228)

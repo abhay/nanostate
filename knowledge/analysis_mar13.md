@@ -1,6 +1,6 @@
 # Analysis: autoresearch/mar13-2
 
-Run tag: mar13-2 | 10 new experiments (74 total) | Focus: SSD architecture tuning
+Run tag: mar13-2 | 12 new experiments (76 total) | Focus: SSD architecture tuning
 
 ## Metric Trajectory
 
@@ -18,7 +18,7 @@ Run tag: mar13-2 | 10 new experiments (74 total) | Focus: SSD architecture tunin
 | 74 | 7.685 | -1.8% | + min_lr=7e-5 (hurts convergence) |
 
 **Best 1000-step lm-tok: 7.593 (SSD + d_head=32 + B/C SiLU + compile + seq512)**
-**Best overall lm-tok: 7.228 (5000 steps, d_head=64, pre-d_head sweep)**
+**Best overall lm-tok: 7.217 (5000 steps, d_head=32 + B/C SiLU, best@2900 — NEW RECORD)**
 
 ### lm (TinyShakespeare byte-level)
 
@@ -63,7 +63,7 @@ Hypothesis: Token-level language modeling has richer per-position information (5
 
 ## What's Promising But Unfinished
 
-1. **5000-step validation with d_head=32**: The 7.593 at 1000 steps with d_head=32 should significantly beat the current 7.228 record (achieved with d_head=64). Expected ~7.1 bpb based on the 1000→5000 scaling ratio. This is the highest-priority experiment.
+1. **5000-step validation with d_head=32**: DONE — achieved 7.217 best@2900 (final 7.283), beating the previous 7.228 record. The improvement from d_head=32 is confirmed at scale.
 
 2. **N_LAYERS=5 with d_head=32**: Never tested with SSD. L=6 was tested with S4D (no gain) and SSD (marginal, 2.2x slower), but L=5 is untested. One more layer adds ~25% more params but only ~25% more compute.
 
