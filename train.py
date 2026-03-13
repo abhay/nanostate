@@ -150,7 +150,7 @@ D_MODEL = 384
 N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
-D_HEAD = int(os.environ.get("NS_D_HEAD", 64))
+D_HEAD = int(os.environ.get("NS_D_HEAD", 32))
 CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
