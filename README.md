@@ -41,7 +41,7 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 7 | 2.1838 | 4.3M | HiPPO-LegS initialization | `ea2016b` |
 | 8 | **2.1745** | **4.3M** | **lr=7e-4** | `6a6c03f` |
 
-*58 experiments across four autoresearch runs ([details](#all-experiments)).*
+*65 experiments across five autoresearch runs ([details](#all-experiments)).*
 
 ### Token-level LM (FineWebEdu BPE)
 
@@ -53,7 +53,8 @@ The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the
 | 2 | 7.7959 | 42.8M | conv1d + SiLU before SSM | `252c4d3` |
 | 3 | 7.4744 | 42.8M | S4D 3000 steps (LTI ceiling) | `6a6c03f` |
 | 4 | 7.5478 | 42.6M | SSD + seq512 (1000 steps) | `cd360d3` |
-| 5 | **7.3381** | **42.6M** | **SSD + seq512 + 3000 steps** | `cd360d3` |
+| 5 | 7.3381 | 42.6M | SSD + seq512 + 3000 steps | `cd360d3` |
+| 6 | **7.228** | **42.6M** | **SSD + compile + seq512 + 4000 steps** | `c802fd9` |
 
 <details>
 <summary><a id="all-experiments"></a>All experiments (including discards)</summary>
@@ -120,6 +121,13 @@ The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the
 | 7.6204 | 42.6M | discard | SSD + bfloat16 (+0.07 bpb quality loss) | `cd360d3` |
 | 7.5606 | 43.0M | discard | SSD + d_state=128 (no gain over 64) | `cd360d3` |
 | 7.5695 | 42.6M | discard | SSD + lr=1e-3 (similar to 7e-4) | `cd360d3` |
+| 7.6723 | 42.6M | discard | SSD + compile + seq512 (no clear gain over individual) | `cd360d3` |
+| 7.6925 | 42.6M | discard | SSD + compile + seq512 + C_SCALE=1.0 (within noise) | `cd360d3` |
+| 7.807 | 42.2M | discard | hybrid attn@2 + compile + seq512 | `cd360d3` |
+| 7.934 | 42.2M | discard | hybrid attn@0 + compile + seq512 (worst position) | `cd360d3` |
+| 7.800 | 42.2M | discard | hybrid attn@3 + compile + seq512 (best hybrid, still worse than SSD) | `cd360d3` |
+| **7.228** | **42.6M** | **keep** | **SSD + compile + seq512 + 5000 steps (best@3700, NEW RECORD)** | `c802fd9` |
+| 7.630 | 43.8M | discard | SSD + SwiGLU gating (same quality, 32% slower) | `c802fd9` |
 
 </details>
 
@@ -204,7 +212,7 @@ Same param count, same settings, `--compile`. Run with `python compare.py`.
 | S4D | 8.199 | 42.8M | 401 |
 | hybrid | 8.211 | 42.2M | 437 |
 
-SSD's selectivity (input-dependent A, B, C) consistently outperforms S4D's fixed convolution kernel. The LTI ceiling is real: S4D at L=4 and L=6 converge to the same val_bpb, while SSD breaks through. Hybrid hasn't shown gains yet at these training durations.
+SSD's selectivity (input-dependent A, B, C) consistently outperforms S4D's fixed convolution kernel. The LTI ceiling is real: S4D at L=4 and L=6 converge to the same val_bpb, while SSD breaks through. Hybrid (SSD+attention) loses to pure SSD at L=4 — at 25% attention ratio, every SSD layer lost is a net capacity hit. The Mamba-2 paper's 10% ratio needs L=10+ layers to pay off.
 
 ## Performance flags
 

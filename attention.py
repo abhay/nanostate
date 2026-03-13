@@ -45,7 +45,7 @@ class AttentionBlock(nn.Module):
             causal = (diff >= 0) & (diff < self.window)
         else:
             causal = diff >= 0
-        mask = mx.where(causal, mx.zeros((L, L)), mx.array(float("-inf")))
+        mask = mx.where(causal, mx.zeros((L, L)), mx.array(float("-inf"))).astype(q.dtype)
 
         scale = 1.0 / (self.d_head**0.5)
         y = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
