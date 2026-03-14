@@ -118,9 +118,8 @@ def ssd_forward(X, A, B, C, block_len=64, use_metal=False):
 class SSDLayer(nn.Module):
     """SSD selective state space layer.
 
-    Takes pre-computed A, B, C tensors and the value input X, then runs
-    the chunked SSD algorithm. Projections are done externally (in SSDBlock)
-    following the Mamba-2 parallel projection pattern.
+    Unlike S4D which uses fixed A/B/C and FFT convolution, SSD makes
+    A/B/C input-dependent (selective) and uses chunked matmul for training.
     """
 
     def __init__(self, d_inner, n_heads, d_state=64, chunk_size=64, use_metal=False):
@@ -131,12 +130,22 @@ class SSDLayer(nn.Module):
         self.chunk_size = chunk_size
         self.use_metal = use_metal
 
+        # Input-dependent projections for A, B, C
+        self.a_proj = nn.Linear(d_inner, n_heads, bias=False)
+        self.b_proj = nn.Linear(d_inner, d_state, bias=False)
+        self.c_proj = nn.Linear(d_inner, d_state, bias=False)
+
         # Skip connection (D parameter, like S4D)
         self.D = mx.ones((d_inner,))
 
-    def __call__(self, x, A, B_proj, C_proj):
-        """x: (batch, seq_len, d_inner), A/B/C pre-computed -> (batch, seq_len, d_inner)"""
+    def __call__(self, x):
+        """x: (batch, seq_len, d_inner) -> (batch, seq_len, d_inner)"""
         B, L, _ = x.shape
+
+        # Input-dependent A, B, C (this is selectivity)
+        A = -nn.softplus(self.a_proj(x))  # (B, L, H) — negative log-decay
+        B_proj = nn.silu(self.b_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
+        C_proj = nn.silu(self.c_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
 
         # Expand B, C to all heads (shared, MVA pattern)
         B_proj = mx.broadcast_to(B_proj[:, :, None, :], (B, L, self.n_heads, self.d_state))
@@ -182,12 +191,6 @@ class SSDBlock(nn.Module):
         # Project to expanded dim: X path + Z gate path
         self.in_proj = nn.Linear(d_model, d_inner * 2)
 
-        # Parallel A/B/C projections from d_model (Mamba-2 paper, Section 6)
-        # Projected from raw input, NOT from conv output — decouples selectivity from local context
-        self.a_proj = nn.Linear(d_model, n_heads, bias=False)
-        self.b_proj = nn.Linear(d_model, d_state, bias=False)
-        self.c_proj = nn.Linear(d_model, d_state, bias=False)
-
         # Depthwise conv on X path (causal, kernel=4)
         # MLX Conv1d is channels-last: input (B, L, C)
         # We pad manually on the left for causal convolution
@@ -205,21 +208,17 @@ class SSDBlock(nn.Module):
         residual = x
         x = self.norm(x)
 
-        # Parallel projections — A/B/C from raw input (not conv output)
-        A = -nn.softplus(self.a_proj(x))       # (B, L, H) — negative log-decay
-        B_proj = nn.silu(self.b_proj(x))       # (B, L, N) — SiLU feature map
-        C_proj = nn.silu(self.c_proj(x))       # (B, L, N) — SiLU feature map
-
+        # Parallel projections
         xz = self.in_proj(x)
         x_raw, z = mx.split(xz, 2, axis=-1)
 
-        # Causal conv1d on X path only: left-pad then conv
+        # Causal conv1d on X path: left-pad then conv
         x_padded = mx.pad(x_raw, [(0, 0), (self.conv_pad, 0), (0, 0)])  # (B, L+3, d_inner)
         x_conv = self.conv1d(x_padded)  # (B, L, d_inner)
         x_conv = nn.silu(x_conv)
 
-        # SSD with pre-computed A/B/C (parallel projection pattern)
-        y = self.ssd(x_conv, A, B_proj, C_proj)
+        # SSD (selective state space)
+        y = self.ssd(x_conv)
 
         # Gate and project
         y = y * nn.silu(z)
