@@ -132,6 +132,10 @@ class SSDLayer(nn.Module):
 
         # Input-dependent projections for A, B, C
         self.a_proj = nn.Linear(d_inner, n_heads, bias=False)
+        # Per-head decay bias: diverse time scales from slow (long memory) to fast (local)
+        # Initialized so softplus(a_bias) spans [0.1, 5.0] logarithmically
+        a_bias_targets = mx.exp(mx.linspace(mx.log(mx.array(0.1)), mx.log(mx.array(5.0)), n_heads))
+        self.a_bias = mx.log(mx.exp(a_bias_targets) - 1)  # inverse softplus
         self.b_proj = nn.Linear(d_inner, d_state, bias=False)
         self.c_proj = nn.Linear(d_inner, d_state, bias=False)
 
@@ -143,7 +147,7 @@ class SSDLayer(nn.Module):
         B, L, _ = x.shape
 
         # Input-dependent A, B, C (this is selectivity)
-        A = -nn.softplus(self.a_proj(x))  # (B, L, H) — negative log-decay
+        A = -nn.softplus(self.a_proj(x) + self.a_bias)  # (B, L, H) — negative log-decay with per-head bias
         B_proj = nn.silu(self.b_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
         C_proj = nn.silu(self.c_proj(x))  # (B, L, N) — SiLU feature map (Mamba-2)
 
