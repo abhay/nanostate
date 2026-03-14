@@ -81,3 +81,5 @@ e634da7	lm	2.2013	5241472	discard	SSD N_LAYERS=5 d_head=32 + B/C SiLU + compile 
 ee3ac7f	lm-tok	7.6689	42658897	keep	d_head=48 (16 heads) + SSD + compile + metal-eval + seq512 (1000 steps, best@950=7.608)
 ee3ac7f	lm-tok	7.5734	43661521	keep	d_head=48 + N_LAYERS=5 + SSD + compile + metal-eval + seq512 (1000 steps, best@900=7.567)
 ee3ac7f	lm-tok	7.2191	43661521	keep	d_head=48 + N_LAYERS=5 + SSD + compile + metal-eval + seq512 4000 steps (best@3800=7.180, NEW RECORD)
+0270a7e	lm-tok	7.3275	43661601	discard	per-head decay bias (a_bias) + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (3000 steps, best@2650=7.225, neutral vs record 7.180)
+b3507b9	lm-tok	7.5836	43385041	discard	parallel A/B/C projections from d_model + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, best@999=7.584, sequential projections are better at 43M)
