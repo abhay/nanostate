@@ -618,7 +618,7 @@ def main():
     print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory | {batch_info}")
 
     # Cosine decay with linear warmup
-    warmup_steps = min(100, max_steps // 10)
+    warmup_steps = int(os.environ.get("NS_WARMUP_STEPS", min(100, max_steps // 10)))
     lr_schedule = optim.schedulers.join_schedules(
         [
             optim.schedulers.linear_schedule(1e-7, lr, warmup_steps),
