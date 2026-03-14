@@ -200,9 +200,6 @@ class SSDBlock(nn.Module):
         # SSD layer
         self.ssd = SSDLayer(d_inner, n_heads, d_state=d_state, chunk_size=chunk_size, use_metal=use_metal)
 
-        # Post-gating norm (Mamba-2: GroupNorm with num_groups=n_heads)
-        self.gating_norm = nn.GroupNorm(n_heads, d_inner)
-
         # Output
         self.out_proj = nn.Linear(d_inner, d_model)
 
@@ -223,7 +220,6 @@ class SSDBlock(nn.Module):
         # SSD (selective state space)
         y = self.ssd(x_conv)
 
-        # Gate, norm, and project
+        # Gate and project
         y = y * nn.silu(z)
-        y = self.gating_norm(y)
         return residual + self.out_proj(y)
