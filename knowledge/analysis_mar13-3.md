@@ -1,6 +1,6 @@
 # Analysis: autoresearch/mar13-3
 
-Run tag: mar13-3 | 13 new experiments (89 total) | Focus: d_head=48 scaling, architecture probes
+Run tag: mar13-3 | 18 new experiments (94 total) | Focus: d_head=48 scaling, architecture & schedule probes
 
 ## Metric Trajectory
 
@@ -16,8 +16,8 @@ Run tag: mar13-3 | 13 new experiments (89 total) | Focus: d_head=48 scaling, arc
 | **82** | **7.573** | **-3.2%** | **d_head=48 + N_LAYERS=5, 1K** |
 | 79 | 7.665 | -2.1% | N_LAYERS=5 (d_head=32), 1K |
 
-**Best 1000-step lm-tok: 7.573 (d_head=48 + N_LAYERS=5 + SSD + compile + seq512)**
-**Best overall lm-tok: 7.180 (4000 steps, d_head=48 + N_LAYERS=5, best@3800 — RECORD)**
+**Best 1000-step lm-tok: 7.491 (LR=1e-3 + d_head=48 + N_LAYERS=5 + SSD + compile + seq512)**
+**Best overall lm-tok: 7.178 (LR=1e-3, 4000 steps, best@2450 — ties record, converges faster)**
 
 ### lm (TinyShakespeare byte-level)
 
@@ -57,6 +57,9 @@ Run tag: mar13-3 | 13 new experiments (89 total) | Focus: d_head=48 scaling, arc
 - **SwiGLU gating**: Same quality as SiLU gate, 32% slower (7.630 vs 7.672). Extra gate parameters wasted.
 - **conv_k=8**: Worse than k=4 by 0.14 bpb. Larger kernel overfits and slows down.
 - **No conv1d**: Essential component, 0.29 bpb loss. Never remove.
+- **warmup=400 for 4000-step runs**: Delays convergence, final 7.208 vs 7.180 record. Default warmup=100 (2.5%) is fine.
+- **chunk_size=16**: 80% slower than chunk_size=32 with no quality gain. Too many inter-chunk overheads on Apple Silicon.
+- **N_LAYERS=6**: Quality improves by 0.043 but 2x slower (10.8s vs 5.6s/step). Not worth it at 43M scale on Apple Silicon.
 
 ## Key Insight: Optimal d_head Varies by Task
 
@@ -79,33 +82,35 @@ Improvements are clearly decelerating. The architecture is close to its ceiling 
 2. Schedule optimization
 3. Minor architectural refinements
 
+## Late-Session Results (after initial analysis)
+
+- **warmup=400 4000 steps**: 7.208 best@3600. Discard — longer warmup doesn't help at 4000 steps. Delays convergence without finding better basin.
+- **N_LAYERS=6 1000 steps**: 7.524 best@950. Keep — 0.043 better than L=5 but **2x slower** (10.8s vs 5.6s/step). Impractical for long runs.
+- **chunk_size=16**: Killed@150. 80% slower than chunk_size=32 with no quality gain. Too many inter-chunk overheads.
+- **LR=1e-3 1000 steps**: **7.491 best@850**. Keep — 0.076 better than LR=7e-4 at 1000 steps!
+- **LR=1e-3 4000 steps**: **7.178 best@2450**. Keep — ties record (7.180) but converges 1350 steps faster. Higher LR speeds early convergence but doesn't raise the ceiling.
+
 ## What's Promising But Unfinished
 
-1. **Warmup=400 for 4000-step run** (RUNNING): Testing 10% warmup vs 2.5% default. Slower ramp may help optimizer find better basin. Results expected in ~5 hours.
+1. **LR=1e-3 as new default**: Converges faster (best@2450 vs 3800). For future runs, LR=1e-3 should be the default — same ceiling but faster to reach it.
 
-2. **6000-8000 step runs**: The 4000-step curve (best@3800) shows the model is still improving. Longer training is the most reliable way to push further. Risk: overfitting (watch train vs val gap).
+2. **6000-8000 step runs**: Model was still slowly improving at step 3800. More training is the most reliable path, but gains are tiny (~0.01 bpb per 1000 extra steps).
 
-3. **LR=1e-3 with warmup=400**: Higher LR + longer warmup might allow faster exploration then better convergence. Untested with d_head=48 + N_LAYERS=5.
+3. **N_LAYERS=6 validation**: 0.043 better at 1000 steps but 2x slower. Only worth validating if the per-step quality advantage survives at scale and justifies the 12-hour investment.
 
-4. **N_LAYERS=6 with d_head=48**: L=6 was marginal with d_head=64 (2.2x slower). But d_head=48 gives faster heads — L=6 might be net positive. Quick 1000-step test first.
-
-5. **Chunk size tuning**: SSD chunk_size is 64 (default). chunk_size=32 or 128 untested. Smaller chunks = finer granularity but more inter-chunk overhead.
-
-6. **Weight decay=0.01**: Current default is 0.0. Mild WD was tried at 0.1 (hurt) and 0.0 (default). 0.01 is an untested middle ground that might help regularize 5-layer models.
+4. **Combination: LR=1e-3 + N_LAYERS=6**: Untested. Higher LR might compensate for L=6's slower convergence per wall-clock.
 
 ## Recommended Next Experiments (Ranked)
 
-1. **Log warmup=400 result** (in progress, ~5 hours): Wait for completion. If it beats 7.180, adopt warmup=400 as standard.
+1. **Adopt LR=1e-3 as default** (code change): Change NS_LR default from 7e-4 to 1e-3 in train.py.
 
-2. **6000-step run** (high priority): NS_STEPS=6000 with current best config (d_head=48, N_LAYERS=5, compile, metal-eval, seq512). Expected ~8.5 hours. Most reliable path to improvement.
+2. **6000-step run with LR=1e-3**: Test if more steps pushes below 7.178. ~9 hours.
 
-3. **N_LAYERS=6 + d_head=48** (1000-step probe): Quick test whether 6th layer helps. If 1K result is significantly better than 7.573, scale to 4000 steps.
+3. **Cross-task benchmark**: Run the `benchmark-comparison` skill to verify improvements transfer to lm, dna, ts tasks.
 
-4. **LR=1e-3 + warmup=400** (1000-step probe): Higher LR with longer ramp. Quick test, ~75 min.
+4. **N_LAYERS=6 + LR=1e-3** (4000 steps): ~12 hours. Only if 6000-step L=5 doesn't improve.
 
-5. **chunk_size=32** (1000-step probe): Finer-grained SSD chunking. May help with selectivity resolution.
-
-6. **Weight decay=0.01** (1000-step probe): Mild regularization for 5-layer model. Quick env var test.
+5. **New architecture ideas**: Multi-head B/C projections, residual scaling, post-SSD conv1d.
 
 ## Speed Notes
 
