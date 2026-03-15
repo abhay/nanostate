@@ -83,3 +83,7 @@ ee3ac7f	lm-tok	7.5734	43661521	keep	d_head=48 + N_LAYERS=5 + SSD + compile + met
 ee3ac7f	lm-tok	7.2191	43661521	keep	d_head=48 + N_LAYERS=5 + SSD + compile + metal-eval + seq512 4000 steps (best@3800=7.180, NEW RECORD)
 0270a7e	lm-tok	7.3275	43661601	discard	per-head decay bias (a_bias) + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (3000 steps, best@2650=7.225, neutral vs record 7.180)
 b3507b9	lm-tok	7.5836	43385041	discard	parallel A/B/C projections from d_model + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, best@999=7.584, sequential projections are better at 43M)
+def4486	lm	2.2117	4208128	discard	d_head=48 on byte-level + SSD + B/C SiLU + compile + metal-eval (worse than d_head=64 record 2.141)
+def4486	lm-tok	7.7545	43661521	discard	LR=5e-4 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, too slow to converge, LR=7e-4 is better)
+a1d260e	lm-tok	7.6759	43415761	discard	d_state=32 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, best@800=7.595, 25% faster but 0.028 bpb worse than d_state=64)
+5bbac78	lm-tok	9.4658	43646161	discard	no conv1d + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (killed@200, 0.29 bpb worse, conv is essential)
