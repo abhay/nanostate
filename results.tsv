@@ -87,3 +87,7 @@ def4486	lm	2.2117	4208128	discard	d_head=48 on byte-level + SSD + B/C SiLU + com
 def4486	lm-tok	7.7545	43661521	discard	LR=5e-4 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, too slow to converge, LR=7e-4 is better)
 a1d260e	lm-tok	7.6759	43415761	discard	d_state=32 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, best@800=7.595, 25% faster but 0.028 bpb worse than d_state=64)
 5bbac78	lm-tok	9.4658	43646161	discard	no conv1d + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (killed@200, 0.29 bpb worse, conv is essential)
+4559f72	lm-tok	7.2075	43661521	discard	warmup=400 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 4000 steps (best@3600=7.208, worse than warmup=100 record 7.180)
+4559f72	lm-tok	7.5244	44664145	keep	N_LAYERS=6 + d_head=48 + SSD + compile + metal-eval + seq512 (1000 steps, best@950=7.524, 0.043 better than L=5 but 2x slower at 10.8s/step)
+4559f72	lm-tok	8.775	43661521	discard	chunk_size=16 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (killed@150, 80% slower than chunk_size=32 with no quality gain)
+4559f72	lm-tok	7.4909	43661521	keep	LR=1e-3 + d_head=48 + N_LAYERS=5 + compile + metal-eval + seq512 (1000 steps, best@850=7.491, 0.076 better than LR=7e-4)
