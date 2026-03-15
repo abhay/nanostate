@@ -212,11 +212,13 @@ class SSDBlock(nn.Module):
         xz = self.in_proj(x)
         x_raw, z = mx.split(xz, 2, axis=-1)
 
-        # SiLU activation on X path (no conv — SSD handles local context via chunks)
-        x_act = nn.silu(x_raw)
+        # Causal conv1d on X path: left-pad then conv
+        x_padded = mx.pad(x_raw, [(0, 0), (self.conv_pad, 0), (0, 0)])  # (B, L+3, d_inner)
+        x_conv = self.conv1d(x_padded)  # (B, L, d_inner)
+        x_conv = nn.silu(x_conv)
 
         # SSD (selective state space)
-        y = self.ssd(x_act)
+        y = self.ssd(x_conv)
 
         # Gate and project
         y = y * nn.silu(z)
