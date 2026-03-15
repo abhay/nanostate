@@ -156,7 +156,7 @@ CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
-LEARNING_RATE = float(os.environ.get("NS_LR", 7e-4))
+LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
 MAX_STEPS_DEFAULT = {"lm": 1000, "lm-tok": 3000, "dna": 1000, "ts": 1000}
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
@@ -316,7 +316,10 @@ class NanoSSM(nn.Module):
         elif block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
+            self.blocks = [
+                SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal)
+                for _ in range(N_LAYERS)
+            ]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)

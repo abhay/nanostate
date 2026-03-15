@@ -47,11 +47,10 @@ Best lm-tok: **7.178** (SSD + d_head=48 + N_LAYERS=5 + LR=1e-3 + compile + seq51
 d_head=48 is the new default — 16 heads with 48-dim values hits the sweet spot for lm-tok (beats d_head=32's 7.217 and d_head=64's 7.228). N_LAYERS=5 consistently adds ~0.03-0.04 bpb for ~25% more compute. LR=1e-3 converges 1350 steps faster than 7e-4 to the same ceiling. Improvements are decelerating: the architecture is approaching its ceiling at 43M params / 4000 steps.
 
 Next directions (ranked):
-1. **Adopt LR=1e-3 as default**: Same ceiling as 7e-4 but reaches it 1350 steps faster. Code change in train.py.
-2. **6000-step run with LR=1e-3**: Test if more steps pushes below 7.178. ~9 hours.
-3. **Cross-task benchmark**: Verify d_head=48 improvements transfer to lm, dna, ts tasks.
-4. **N_LAYERS=6 + LR=1e-3** (4000 steps): L=6 is 0.043 better at 1000 steps but 2x slower. Only try if 6000-step L=5 doesn't improve. ~12 hours.
-5. **New architecture ideas**: Multi-head B/C projections, residual scaling, post-SSD conv1d.
+1. **6000-step run with LR=1e-3**: Test if more steps pushes below 7.178. ~9 hours.
+2. **Cross-task benchmark**: Verify d_head=48 improvements transfer to lm, dna, ts tasks.
+3. **N_LAYERS=6 + LR=1e-3** (4000 steps): L=6 is 0.043 better at 1000 steps but 2x slower. Only try if 6000-step L=5 doesn't improve. ~12 hours.
+4. **New architecture ideas**: Multi-head B/C projections, residual scaling, post-SSD conv1d.
 Do NOT run: RMSNorm+SSD, d_head=16, min_lr=7e-5, C_SCALE, seq1024, --size medium, hybrid at L=4, SwiGLU, conv_k=8, B/C SiLU ablation on lm-tok (confirmed neutral), expand=3 (2.6x slower, no gain), GroupNorm after gating, per-head decay bias, parallel A/B/C projections, d_state=32 (0.028 worse), chunk_size=16 (80% slower), warmup=400 for 4000-step runs, no-conv1d (0.29 bpb worse).
 
 **Three block types:**
@@ -234,8 +233,8 @@ S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), an
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
 **Optimizer & training:**
-- LR=7e-4 is the current default but **LR=1e-3 converges 1350 steps faster** to the same ceiling (7.178 best@2450 vs best@3800). Recommended as next default change.
-- LR=5e-4 is too slow for deep models (N_LAYERS=5+). Use 7e-4 or 1e-3.
+- **LR=1e-3 is the default** (changed from 7e-4). Converges 1350 steps faster to the same ceiling (7.178 best@2450 vs best@3800 at 7e-4). LR=7e-4 still works but is slower.
+- LR=5e-4 is too slow for deep models (N_LAYERS=5+). Don't use it.
 - Optimal training: ~4000 steps for SSD + seq512 (overfits after ~3700). Use `--steps 4000` for validation runs.
 - Warmup: default `min(100, max_steps // 10)` works well. Configurable via NS_WARMUP_STEPS env var. Longer warmup (400 steps) doesn't help.
 - Gradient accumulation: `--grad-accum N` (incompatible with `--compile`).
