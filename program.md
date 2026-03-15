@@ -41,16 +41,17 @@ To set up a new experiment run:
 
 Each experiment runs on Apple Silicon via MLX. You launch it as: `uv run python train.py --task lm` (or `--task lm-tok` or `--task dna` or `--task ts`).
 
-**Current priority (mar13):**
-Best lm-tok: **7.217** (SSD + d_head=32 + B/C SiLU + compile + seq512, best@2900 of 5000 steps, 42.7M params). Best byte-level: **2.141** (SSD + B/C SiLU + d_head=64). 76 experiments across 5 agent runs.
+**Current priority (mar13-3):**
+Best lm-tok: **7.178** (SSD + d_head=48 + N_LAYERS=5 + LR=1e-3 + compile + seq512, best@2450 of 4000 steps, 43.7M params). Best byte-level: **2.141** (SSD + B/C SiLU + d_head=64). 94 experiments across 6 agent runs.
 
-The d_head=32 win is confirmed at scale but marginal (7.217 vs 7.228). B/C SiLU is neutral on lm-tok but helps byte-level. Next directions (ranked):
-1. **expand=3** (wider d_inner=1152 vs 768): more params, more expressive SSD. Quick code change + 1000-step screen.
-2. **Targeted 4000-step cosine**: use `--steps 4000` with current best recipe. Training peaks at ~3700 steps then overfits — 4000 steps may be the sweet spot.
-3. **Conv1d(k=4) + SSD on lm-tok**: conv1d helps S4D lm-tok (7.796), untested with SSD. Worth a 1000-step screen.
-4. **Warmup=500 for long runs**: current 100 steps = 2% of 5000. 10-12% warmup may help early convergence.
-5. **N_LAYERS=5 on lm-tok**: tested on byte-level (overfits), untested on lm-tok where overfitting is not an issue.
-Do NOT run: RMSNorm+SSD, d_head=16, min_lr=7e-5, C_SCALE, seq1024, --size medium, hybrid at L=4, SwiGLU, conv_k=8, B/C SiLU ablation on lm-tok (confirmed neutral).
+d_head=48 is the new default — 16 heads with 48-dim values hits the sweet spot for lm-tok (beats d_head=32's 7.217 and d_head=64's 7.228). N_LAYERS=5 consistently adds ~0.03-0.04 bpb for ~25% more compute. LR=1e-3 converges 1350 steps faster than 7e-4 to the same ceiling. Improvements are decelerating: the architecture is approaching its ceiling at 43M params / 4000 steps.
+
+Next directions (ranked):
+1. **6000-step run with LR=1e-3**: Test if more steps pushes below 7.178. ~9 hours.
+2. **Cross-task benchmark**: Verify d_head=48 improvements transfer to lm, dna, ts tasks.
+3. **N_LAYERS=6 + LR=1e-3** (4000 steps): L=6 is 0.043 better at 1000 steps but 2x slower. Only try if 6000-step L=5 doesn't improve. ~12 hours.
+4. **New architecture ideas**: Multi-head B/C projections, residual scaling, post-SSD conv1d.
+Do NOT run: RMSNorm+SSD, d_head=16, min_lr=7e-5, C_SCALE, seq1024, --size medium, hybrid at L=4, SwiGLU, conv_k=8, B/C SiLU ablation on lm-tok (confirmed neutral), expand=3 (2.6x slower, no gain), GroupNorm after gating, per-head decay bias, parallel A/B/C projections, d_state=32 (0.028 worse), chunk_size=16 (80% slower), warmup=400 for 4000-step runs, no-conv1d (0.29 bpb worse).
 
 **Three block types:**
 - `--block s4d` (default): S4D diagonal SSM with FFT convolution. Fixed A/B/C (LTI). Fast but hits a quality ceiling.
@@ -152,7 +153,7 @@ LOOP FOREVER:
      - `small`: d=384, L=4 (~4.3M lm, ~42.8M lm-tok) — default, quick iteration
      - `medium`: d=768, L=6 (~23M lm, ~100M lm-tok) — serious training
      - `large`: d=1024, L=12 (~81M lm, ~183M lm-tok) — pushing M1 Max limits
-   - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN) without editing code. `NS_D_MODEL`, `NS_N_LAYERS`, `NS_STATE_DIM` still work and override `--size`. No commit needed.
+   - **Env var sweep** (for hyperparameter changes): set `NS_*` env vars (NS_BATCH_SIZE, NS_LR, NS_STEPS, NS_SEQ_LEN, NS_D_HEAD, NS_EXPAND, NS_WARMUP_STEPS, NS_CHUNK_SIZE) without editing code. `NS_D_MODEL`, `NS_N_LAYERS`, `NS_STATE_DIM` still work and override `--size`. No commit needed.
    - **Code change** (for architectural changes): edit `train.py` and git commit.
    Use your judgment. Model scaling → `--size`. Pure number tuning (lr, batch, seq_len) → env vars. Structural changes (new init, gating, selectivity) → code edit.
 3. Run the experiment: `uv run python train.py --task lm-tok --block ssd --compile --metal-eval --save checkpoints/lm_tok > run.log 2>&1` (redirect everything; do NOT use tee or let output flood your context). Always use `--save` so the best checkpoint is tracked automatically (saved to `checkpoints/<task>/best/` whenever val_loss improves). For byte-level: `uv run python train.py --task lm --block ssd --compile --save checkpoints/lm > run.log 2>&1`.
@@ -183,10 +184,11 @@ S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), an
 
 **SSD (Mamba-2) — implemented, use `--block ssd`:**
 - Implementation in `ssd.py`. Chunked matmul algorithm, input-dependent A/B/C (selective). B/C use SiLU feature map (Mamba-2 paper).
-- Best lm-tok: **7.217** (d_head=32, 5000 steps, best@2900). Broke the LTI ceiling (S4D topped out at 7.474).
-- Best byte-level: **2.141** (d_head=64, B/C SiLU). d_head is task-dependent: 32 for lm-tok, 64 for byte-level.
+- Best lm-tok: **7.178** (d_head=48, N_LAYERS=5, LR=1e-3, 4000 steps, best@2450). Broke the LTI ceiling (S4D topped out at 7.474).
+- Best byte-level: **2.141** (d_head=64, B/C SiLU). d_head is task-dependent: 48 for lm-tok, 64 for byte-level.
 - Always use `--compile --metal-eval` for SSD runs. seq512 validated: use `NS_SEQ_LEN=512` for all lm-tok.
-- Default d_head=32 (NS_D_HEAD env var). Chunk size auto-tunes to 32 at seq512.
+- Default d_head=48 (NS_D_HEAD env var). Expand ratio configurable via NS_EXPAND (default 2). Chunk size auto-tunes to 32 at seq512.
+- Conv1d is essential — removing it causes 0.29 bpb loss. The k=4 local context window complements SSD's chunk-level attention.
 - See `knowledge/summary_mamba2_ssd.md` and `knowledge/design_ssd_implementation.md` for design details.
 
 **Tested and resolved (don't retry):**
@@ -198,30 +200,43 @@ S4D has HiPPO-LegS initialization, Mamba-style gated blocks (pre-norm, SiLU), an
 - SwiGLU gating: same quality as default SiLU but 32% slower. Discard.
 - seq_len=512: validated, use it.
 - d_head=16 (48 heads): same quality as d_head=32 but 30% slower on lm-tok. Too many heads.
-- d_head=32 vs 64: d_head=32 is slightly better on lm-tok (7.217 vs 7.228 at scale), d_head=64 is better on byte-level lm. Now default=32.
+- d_head optimal: **d_head=48 is best for lm-tok** (7.178 record, 16 heads). d_head=64 is best for byte-level lm (2.141). d_head=32 is worse than 48 on lm-tok (7.217 vs 7.178). Optimal d_head varies by task: lm-tok wants more heads with moderate capacity, byte-level wants fewer heads with larger values.
 - B/C SiLU feature map: helps byte-level lm (2.141 record), neutral on lm-tok. Keep for byte-level, don't expect gains on lm-tok.
 - Cosine min_lr=7e-5: hurts at 1000 steps (7.685 vs 7.593). Default 1e-5 is fine.
-- SwiGLU gating: same quality as SiLU but 32% slower (7.630 vs 7.672). Not worth it.
 - conv_k=8: worse than conv_k=4 by 0.14 bpb on lm-tok.
-- N_LAYERS=5 on byte-level: overfits (best@400=2.169, final=2.201). Untested on lm-tok.
+- N_LAYERS=5 on byte-level: overfits (best@400=2.169, final=2.201). But **N_LAYERS=5 works on lm-tok** — adds ~0.03-0.04 bpb for 25% more compute. Use it for lm-tok validation runs.
+- N_LAYERS=6: 0.043 better than L=5 at 1000 steps but 2x slower (10.8s vs 5.6s/step). Not worth it at 43M scale on Apple Silicon.
 - Hybrid SSM+attention at L=4: all attention positions (0,2,3) worse than pure SSD. 25% attention ratio too high — needs L=10+ for the 10% sweet spot.
+- expand=3 (d_inner=1152): 2.6x slower, same quality trend. Massive intermediate tensors with no quality gain at 43M.
+- Per-head decay bias (a_bias): HiPPO-inspired diverse time scales for A. Neutral (7.225 vs 7.180 record). Learned A projections already adapt.
+- Parallel A/B/C projections from d_model: Mamba-2 paper pattern. Worse than sequential from d_inner (7.584 vs 7.573). At 43M, conv1d output provides useful local context for selectivity.
+- GroupNorm after gating: 0.2 bpb worse at 350 steps. Mamba-2 pattern that doesn't help at this scale.
+- d_state=32: 25% faster but 0.028 bpb worse (7.595 vs 7.567). d_state=64 has genuinely higher ceiling.
+- chunk_size=16: 80% slower than chunk_size=32 with no quality gain. Too many inter-chunk overheads on Apple Silicon.
+- No conv1d: essential component, 0.29 bpb loss. Never remove.
+- warmup=400 for 4000-step runs: delays convergence (7.208 vs 7.180). Default warmup=100 (2.5%) is fine.
+- d_head=48 on byte-level: 2.212 vs 2.141 record. Byte-level needs d_head=64.
+- LR=5e-4 with deep models: too slow for N_LAYERS=5 (7.755).
 
 **Unexplored ideas (ranked by expected impact):**
-1. expand=3 (wider d_inner=1152 vs 768): more params, never tested with SSD.
-2. Conv1d(k=4) + SSD on lm-tok: conv1d helps S4D lm-tok (7.796), untested with SSD.
-3. Targeted 4000-step cosine: training peaks at ~3700 steps then overfits. Tighter schedule may help.
-4. Longer warmup for 4000+ step runs (500 steps = 12%).
-5. N_LAYERS=5 on lm-tok: overfits on byte-level but lm-tok has 10B tokens, overfitting unlikely.
+1. 6000-8000 step runs: model still improving at step 3800. More training is the most reliable path but gains are tiny (~0.01 bpb per 1000 extra steps).
+2. N_LAYERS=6 + LR=1e-3: untested combination. Higher LR might compensate for L=6's slower convergence per wall-clock.
+3. Multi-head B/C projections: separate B/C per head instead of shared.
+4. Residual scaling: scale residual connections by 1/sqrt(N_LAYERS).
+5. Post-SSD conv1d: conv after SSD instead of before.
 
 **Speed & precision:**
 - **Recommended for SSD + lm-tok**: `--compile --metal-eval` on every run. Compile gives 19% faster training, metal-eval gives ~20% faster evals. Chunk size auto-tunes to Q=32 at seq512.
 - **bfloat16 with SSD**: Works but costs ~0.07 bpb quality (7.620 vs 7.548). Acceptable for quick iteration, use float32 for final runs.
 - **Bandwidth-limited at seq512**: Training is memory-bandwidth-limited on Apple Silicon at seq512. Use `--compile` (fewer kernel launches), `--metal-eval` (faster evals), and let chunk size auto-tune. `--grad-accum` can simulate larger batch without extra memory.
+- **Speed by config**: d_head=48 + L=4: ~5.5s/step. d_head=48 + L=5: ~5.6s/step. d_head=32 + L=4: ~4.4s/step. L=6: ~10.8s/step (2x slower than L=5, not worth it).
 - See `knowledge/mlx_optimization_research.md` for detailed MLX capabilities.
 
 **Optimizer & training:**
-- LR=7e-4 is the sweet spot (swept 5e-4 through 1e-3). Don't re-sweep.
+- **LR=1e-3 is the default** (changed from 7e-4). Converges 1350 steps faster to the same ceiling (7.178 best@2450 vs best@3800 at 7e-4). LR=7e-4 still works but is slower.
+- LR=5e-4 is too slow for deep models (N_LAYERS=5+). Don't use it.
 - Optimal training: ~4000 steps for SSD + seq512 (overfits after ~3700). Use `--steps 4000` for validation runs.
+- Warmup: default `min(100, max_steps // 10)` works well. Configurable via NS_WARMUP_STEPS env var. Longer warmup (400 steps) doesn't help.
 - Gradient accumulation: `--grad-accum N` (incompatible with `--compile`).
 - Weight decay hurts on lm-tok. Don't retry.
 - Model scaling: `--size medium` and `--size large` crash with Metal watchdog. Stick with `small` for now.

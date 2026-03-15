@@ -150,12 +150,13 @@ D_MODEL = 384
 N_LAYERS = 4
 STATE_DIM = 64
 MLP_RATIO = 2
-D_HEAD = int(os.environ.get("NS_D_HEAD", 32))
+D_HEAD = int(os.environ.get("NS_D_HEAD", 48))
+EXPAND = int(os.environ.get("NS_EXPAND", 2))
 CHUNK_SIZE = int(os.environ.get("NS_CHUNK_SIZE", 64))
 
 # training
 BATCH_SIZE = int(os.environ.get("NS_BATCH_SIZE", 32))
-LEARNING_RATE = float(os.environ.get("NS_LR", 7e-4))
+LEARNING_RATE = float(os.environ.get("NS_LR", 1e-3))
 MAX_STEPS_DEFAULT = {"lm": 1000, "lm-tok": 3000, "dna": 1000, "ts": 1000}
 EVAL_INTERVAL = 50
 EVAL_STEPS = 10
@@ -311,11 +312,14 @@ class NanoSSM(nn.Module):
                 if i in attn_set:
                     self.blocks.append(AttentionBlock(D_MODEL, window=window))
                 else:
-                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, chunk_size=chunk_size, use_metal=use_metal))
+                    self.blocks.append(SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal))
         elif block_type == "ssd":
             from ssd import SSDBlock
 
-            self.blocks = [SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, chunk_size=chunk_size, use_metal=use_metal) for _ in range(N_LAYERS)]
+            self.blocks = [
+                SSDBlock(D_MODEL, d_state=STATE_DIM, d_head=D_HEAD, expand=EXPAND, chunk_size=chunk_size, use_metal=use_metal)
+                for _ in range(N_LAYERS)
+            ]
         else:
             self.blocks = [SSMBlock(D_MODEL, STATE_DIM, MLP_RATIO) for _ in range(N_LAYERS)]
         self.norm = nn.LayerNorm(D_MODEL)
@@ -617,7 +621,7 @@ def main():
     print(f"  {hw['name']}, {hw['memory_gb']:.0f}GB | est. {est_gb:.1f}GB training memory | {batch_info}")
 
     # Cosine decay with linear warmup
-    warmup_steps = min(100, max_steps // 10)
+    warmup_steps = int(os.environ.get("NS_WARMUP_STEPS", min(100, max_steps // 10)))
     lr_schedule = optim.schedulers.join_schedules(
         [
             optim.schedulers.linear_schedule(1e-7, lr, warmup_steps),

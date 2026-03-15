@@ -42,7 +42,7 @@ Language modeling on TinyShakespeare (byte-level), M1 Max. Lower BPB is better. 
 | 8 | 2.1745 | 4.3M | lr=7e-4 | `6a6c03f` |
 | 9 | **2.141** | **4.2M** | **SSD + B/C SiLU feature map** | `0f79501` |
 
-*76 experiments across five autoresearch runs ([details](#all-experiments)).*
+*94 experiments across six autoresearch runs ([details](#all-experiments)).*
 
 ### Token-level LM (FineWebEdu BPE)
 
@@ -56,7 +56,8 @@ The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the
 | 4 | 7.5478 | 42.6M | SSD + seq512 (1000 steps) | `cd360d3` |
 | 5 | 7.3381 | 42.6M | SSD + seq512 + 3000 steps | `cd360d3` |
 | 6 | 7.228 | 42.6M | SSD + compile + seq512 5000 steps (best@3700) | `c802fd9` |
-| 7 | **7.217** | **42.7M** | **SSD + d_head=32 + compile + seq512 5000 steps (best@2900)** | `832481a` |
+| 7 | 7.217 | 42.7M | SSD + d_head=32 + compile + seq512 5000 steps (best@2900) | `832481a` |
+| 8 | **7.178** | **43.7M** | **SSD + d_head=48 + N_LAYERS=5 + LR=1e-3 + seq512 4000 steps (best@2450)** | `4559f72` |
 
 <details>
 <summary><a id="all-experiments"></a>All experiments (including discards)</summary>
@@ -136,6 +137,23 @@ The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the
 | 7.687 | 42.8M | discard | SSD d_head=16 (48 heads, 30% slower, no gain) | `ace2fef` |
 | 7.685 | 42.7M | discard | SSD d_head=32 + min_lr=7e-5 (hurts convergence) | `9525b0b` |
 | **7.283** | **42.7M** | **keep** | **SSD d_head=32 + B/C SiLU + seq512 5000 steps (best@2900=7.217)** | `832481a` |
+| 7.751 | 42.7M | keep | mar13-3 baseline: SSD d_head=32 + seq512 (1000 steps) | `4559f72` |
+| 8.921 | 56.7M | discard | expand=3 (d_inner=1152, 2.6x slower, same quality) | `4559f72` |
+| 7.665 | 43.7M | keep | N_LAYERS=5 + SSD d_head=32 + seq512 (1000 steps) | `4559f72` |
+| 8.327 | 42.7M | discard | GroupNorm after gating (0.2 bpb worse) | `81a030f` |
+| 7.669 | 42.7M | keep | d_head=48 (16 heads) + SSD + seq512 (1000 steps) | `ee3ac7f` |
+| 7.573 | 43.7M | keep | d_head=48 + N_LAYERS=5 + SSD + seq512 (1000 steps) | `ee3ac7f` |
+| 7.219 | 43.7M | keep | d_head=48 + N_LAYERS=5 + SSD + seq512 4000 steps (best@3800=7.180) | `ee3ac7f` |
+| 7.328 | 43.7M | discard | per-head decay bias + d_head=48 + N_LAYERS=5 (neutral) | `0270a7e` |
+| 7.584 | 43.4M | discard | parallel A/B/C projections (worse than sequential) | `b3507b9` |
+| 7.755 | 43.7M | discard | LR=5e-4 + d_head=48 + N_LAYERS=5 (too slow) | `def4486` |
+| 7.676 | 43.4M | discard | d_state=32 + d_head=48 + N_LAYERS=5 (0.028 worse) | `a1d260e` |
+| 9.466 | 43.6M | discard | no conv1d (0.29 bpb worse, conv essential) | `5bbac78` |
+| 7.208 | 43.7M | discard | warmup=400, 4000 steps (worse than warmup=100) | `4559f72` |
+| 7.524 | 44.7M | keep | N_LAYERS=6 + d_head=48 (0.043 better but 2x slower) | `4559f72` |
+| 8.775 | 43.7M | discard | chunk_size=16 (80% slower, no gain) | `4559f72` |
+| 7.491 | 43.7M | keep | LR=1e-3 + d_head=48 + N_LAYERS=5 (1000 steps) | `4559f72` |
+| **7.178** | **43.7M** | **keep** | **LR=1e-3 + d_head=48 + N_LAYERS=5 4000 steps (best@2450=7.178, NEW RECORD)** | `4559f72` |
 
 **lm (byte-level) — SSD experiments**
 
@@ -145,6 +163,7 @@ The real benchmark. 50K vocab, 10B token dataset, no overfitting. SSD breaks the
 | 2.166 | 4.2M | discard | SSD d_head=32 + B/C SiLU (worse on bytes) | `ace2fef` |
 | 2.188 | 4.3M | discard | SSD d_head=16 + B/C SiLU (worst on bytes) | `ace2fef` |
 | 2.201 | 5.2M | discard | SSD N_LAYERS=5 + d_head=32 (overfits, best@400=2.169) | `e634da7` |
+| 2.212 | 4.2M | discard | SSD d_head=48 on byte-level (worse than d_head=64) | `def4486` |
 
 </details>
 
